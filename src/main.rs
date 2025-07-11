@@ -1,7 +1,8 @@
 use std::{
-    fs::{File, read_to_string},
-    io::{Read, Write},
+    fs::{File, OpenOptions},
+    io::{BufRead, Write},
     net::TcpStream,
+    os::unix::fs::FileExt,
     sync::Arc,
 };
 
@@ -37,15 +38,36 @@ fn send_web_request() {
         .negotiated_cipher_suite()
         .expect("cipher suite failed");
 
-    let mut plaintext = Vec::new();
+    let mut plaintext = String::new();
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open("foo.txt")
+        .expect("file creation failed");
 
-    tls.read_to_end(&mut plaintext)
-        .expect("failed to read from https buffer");
+    let mut content_start = false;
+    loop {
+        let content_line = match tls.read_line(&mut plaintext) {
+            Ok(0) => break,
+            Ok(buf_size) => buf_size > 6,
+            Err(err) => {
+                println!("{}", err);
+                break;
+            }
+        };
 
-    File::create("foo.txt")
-        .expect("file creation failed")
-        .write_all(&plaintext)
-        .expect("writing to file failed")
+        if plaintext.starts_with("{") {
+            content_start = true;
+        }
+
+        plaintext.truncate(plaintext.len() - 2);
+        if content_start && content_line {
+            file.write(plaintext.as_bytes()).expect("error");
+        } else {
+            println!("{}", plaintext)
+        }
+        plaintext.clear();
+    }
 }
 
 fn build_request() -> String {
