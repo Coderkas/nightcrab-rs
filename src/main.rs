@@ -1,17 +1,81 @@
 use std::{
-    fs::{File, OpenOptions},
+    env,
+    fs::OpenOptions,
     io::{BufRead, Write},
     net::TcpStream,
-    os::unix::fs::FileExt,
+    path::Path,
     sync::Arc,
 };
 
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_types::ServerName};
 use webpki_roots::TLS_SERVER_ROOTS;
 
+struct Weapon {
+    name: &'static str,
+    range: u8,
+    passive: &'static str,
+    kind: &'static str,
+    attack_affinity: &'static str,
+    attack_power: ElementTypes,
+    guarded_negation: ElementTypes,
+    scaling: Attributes,
+    status_ailment: StatusAilment,
+    active: &'static str,
+}
+
+struct ElementTypes {
+    physical: u8,
+    magic: u8,
+    fire: u8,
+    lightning: u8,
+    holy: u8,
+    boost: u8,
+}
+
+struct Attributes {
+    vigor: char,
+    mind: char,
+    endurance: char,
+    strength: char,
+    dexterity: char,
+    intelligence: char,
+    faith: char,
+    arcane: char,
+}
+
+struct StatusAilment {
+    kind: &'static str,
+    value: u8,
+}
+
 fn main() {
-    //print!("{}", build_request().trim_end());
-    send_web_request();
+    if let Some(arg) = env::args().next() {
+        if arg == "run" {
+            match Path::new("../weapons.json").try_exists() {
+                Ok(true) => println!(""),
+                Ok(false) => {
+                    println!("weapons.json doesnt exist. Run 'nightcrab update' first")
+                }
+                Err(err) => println!(
+                    "Failed to resolve path to needed data, either the file doesnt exist or there were some other issues"
+                ),
+            };
+        } else if arg == "update" {
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open("weapons.json")
+                .expect("File");
+            send_web_request();
+        } else {
+            println!(
+                "Unknown argument '{}' provided. Possible options are 'run', 'update'",
+                arg
+            )
+        }
+    } else {
+        println!("Option missing, available parameters are 'run', 'update'")
+    }
 }
 
 fn send_web_request() {
@@ -42,7 +106,7 @@ fn send_web_request() {
     let mut file = OpenOptions::new()
         .append(true)
         .create(true)
-        .open("foo.txt")
+        .open("weapons.json")
         .expect("file creation failed");
 
     let mut content_start = false;
