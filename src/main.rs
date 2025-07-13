@@ -1,25 +1,29 @@
 use std::{
     env,
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{BufRead, Write},
     net::TcpStream,
-    path::Path,
     sync::Arc,
 };
 
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_types::ServerName};
+use serde_json::Value;
 use webpki_roots::TLS_SERVER_ROOTS;
 
+#[derive(Debug, Deserialize)]
+#[serde(rename = "staticDataEntity")]
 struct Weapon {
     name: &'static str,
-    range: u8,
-    passive: &'static str,
+    range: Option<u8>,
+    #[serde(rename = "weaponPassive")]
+    passive: Option<&'static str>,
+    #[serde(rename = "weaponWeapon")]
     kind: &'static str,
     attack_affinity: &'static str,
     attack_power: ElementTypes,
     guarded_negation: ElementTypes,
-    scaling: Attributes,
-    status_ailment: StatusAilment,
+    scaling: [Attribute; 4],
+    status_ailment: Option<StatusAilment>,
     active: &'static str,
 }
 
@@ -32,33 +36,33 @@ struct ElementTypes {
     boost: u8,
 }
 
-struct Attributes {
-    vigor: char,
-    mind: char,
-    endurance: char,
-    strength: char,
-    dexterity: char,
-    intelligence: char,
-    faith: char,
-    arcane: char,
+enum Attribute {
+    Vigor(char),
+    Mind(char),
+    Endurance(char),
+    Strength(char),
+    Dexterity(char),
+    Intelligence(char),
+    Faith(char),
+    Arcane(char),
 }
 
-struct StatusAilment {
-    kind: &'static str,
-    value: u8,
+enum StatusAilment {
+    Poison(u8),
+    ScarletRot(u8),
+    BloodLoss(u8),
+    Frostbite(u8),
+    Sleep(u8),
+    Madness(u8),
+    DeathBlight(u8),
 }
 
 fn main() {
     if let Some(arg) = env::args().next() {
         if arg == "run" {
-            match Path::new("../weapons.json").try_exists() {
-                Ok(true) => println!(""),
-                Ok(false) => {
-                    println!("weapons.json doesnt exist. Run 'nightcrab update' first")
-                }
-                Err(err) => println!(
-                    "Failed to resolve path to needed data, either the file doesnt exist or there were some other issues"
-                ),
+            match OpenOptions::new().write(false).open("./weapon.json") {
+                Ok(f) => println!("Succeeded in opening file"),
+                Err(err) => println!("Failed to open data file because of error: {}", err),
             };
         } else if arg == "update" {
             OpenOptions::new()
@@ -75,6 +79,28 @@ fn main() {
         }
     } else {
         println!("Option missing, available parameters are 'run', 'update'")
+    }
+}
+
+fn parse_json(json_file: &File) {
+    let json_result: Result<Value, serde_json::Error> = serde_json::from_reader(json_file);
+    if let Ok(v) = json_result {
+        let weapon_data = &v["data"]["game"]["documents"]["wikiDocuments"]["documents"][0]["data"]
+            ["staticDataEntity"];
+        let serialized_weapon = Weapon {
+            name: weapon_data["name"]
+                .as_str()
+                .expect("Weapon name was empty, wft?"),
+            range: match weapon_data["range"].is_null() {
+                true => Some(
+                    weapon_data["range"]
+                        .as_u64()
+                        .expect("Range has a value but it wasnt a number?")
+                        as u8,
+                ),
+                false => None,
+            },
+        };
     }
 }
 
@@ -102,8 +128,8 @@ fn send_web_request() {
         .negotiated_cipher_suite()
         .expect("cipher suite failed");
 
-    let mut plaintext = String::new();
-    let mut file = OpenOptions::new()
+    let mut string_buf = String::new();
+    let mut json_file = OpenOptions::new()
         .append(true)
         .create(true)
         .open("weapons.json")
@@ -111,7 +137,7 @@ fn send_web_request() {
 
     let mut content_start = false;
     loop {
-        let content_line = match tls.read_line(&mut plaintext) {
+        let content_line = match tls.read_line(&mut string_buf) {
             Ok(0) => break,
             Ok(buf_size) => buf_size > 6,
             Err(err) => {
@@ -120,17 +146,17 @@ fn send_web_request() {
             }
         };
 
-        if plaintext.starts_with("{") {
+        if string_buf.starts_with("{") {
             content_start = true;
         }
 
-        plaintext.truncate(plaintext.len() - 2);
+        string_buf.truncate(string_buf.len() - 2);
         if content_start && content_line {
-            file.write(plaintext.as_bytes()).expect("error");
+            json_file.write(string_buf.as_bytes()).expect("error");
         } else {
-            println!("{}", plaintext)
+            println!("{}", string_buf)
         }
-        plaintext.clear();
+        string_buf.clear();
     }
 }
 
