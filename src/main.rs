@@ -1,6 +1,6 @@
 use std::{
     env,
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     io::{BufRead, Write},
     net::TcpStream,
     sync::Arc,
@@ -10,21 +10,17 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_typ
 use serde_json::Value;
 use webpki_roots::TLS_SERVER_ROOTS;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename = "staticDataEntity")]
-struct Weapon {
-    name: &'static str,
+struct Weapon<'a> {
+    name: &'a str,
     range: Option<u8>,
-    #[serde(rename = "weaponPassive")]
-    passive: Option<&'static str>,
-    #[serde(rename = "weaponWeapon")]
-    kind: &'static str,
-    attack_affinity: &'static str,
+    passive: Option<&'a str>,
+    kind: &'a str,
+    attack_affinity: &'a str,
     attack_power: ElementTypes,
     guarded_negation: ElementTypes,
-    scaling: [Attribute; 4],
+    scaling: [Attribute<'a>; 4],
     status_ailment: Option<StatusAilment>,
-    active: &'static str,
+    active: &'a str,
 }
 
 struct ElementTypes {
@@ -36,15 +32,16 @@ struct ElementTypes {
     boost: u8,
 }
 
-enum Attribute {
-    Vigor(char),
-    Mind(char),
-    Endurance(char),
-    Strength(char),
-    Dexterity(char),
-    Intelligence(char),
-    Faith(char),
-    Arcane(char),
+enum Attribute<'a> {
+    Vigor(&'a str),
+    Mind(&'a str),
+    Endurance(&'a str),
+    Strength(&'a str),
+    Dexterity(&'a str),
+    Intelligence(&'a str),
+    Faith(&'a str),
+    Arcane(&'a str),
+    Unknown,
 }
 
 enum StatusAilment {
@@ -58,10 +55,30 @@ enum StatusAilment {
 }
 
 fn main() {
-    if let Some(arg) = env::args().next() {
+    if let Some(arg) = env::args().nth(1) {
+        println!("{}", arg);
         if arg == "run" {
-            match OpenOptions::new().write(false).open("./weapon.json") {
-                Ok(f) => println!("Succeeded in opening file"),
+            match OpenOptions::new()
+                .write(false)
+                .read(true)
+                .open("weapons.json")
+            {
+                Ok(f) => {
+                    let json_values: Result<Value, serde_json::Error> = serde_json::from_reader(f);
+                    let weapon_json = &json_values
+                        .expect("Failed in parsing json to serde value struct")["data"]["game"]["documents"]
+                        ["wikiDocuments"]["documents"];
+                    let mut weapon_data = Vec::new();
+                    for weapon in weapon_json
+                        .as_array()
+                        .expect("Arrary of data.staticDataEnity wasnt an array")
+                    {
+                        weapon_data.push(parse_weapon_data(&weapon["data"]["staticDataEntity"]));
+                    }
+                    for item in weapon_data {
+                        println!("{}", item.name)
+                    }
+                }
                 Err(err) => println!("Failed to open data file because of error: {}", err),
             };
         } else if arg == "update" {
@@ -82,26 +99,147 @@ fn main() {
     }
 }
 
-fn parse_json(json_file: &File) {
-    let json_result: Result<Value, serde_json::Error> = serde_json::from_reader(json_file);
-    if let Ok(v) = json_result {
-        let weapon_data = &v["data"]["game"]["documents"]["wikiDocuments"]["documents"][0]["data"]
-            ["staticDataEntity"];
-        let serialized_weapon = Weapon {
-            name: weapon_data["name"]
+fn parse_weapon_data<'a>(weapon_data: &'a Value) -> Weapon<'a> {
+    Weapon {
+        name: weapon_data["name"]
+            .as_str()
+            .expect("Weapon name was empty, wft?"),
+        range: match weapon_data["range"].is_null() {
+            false => Some(
+                weapon_data["range"]
+                    .as_u64()
+                    .expect("Range has a value but it wasnt a number?") as u8,
+            ),
+            true => None,
+        },
+        passive: match weapon_data["weaponPassive"].is_null() {
+            false => Some(
+                weapon_data["weaponPassive"]["name"]
+                    .as_str()
+                    .expect("Weapon passive was not empty, but name was empty?"),
+            ),
+            true => None,
+        },
+        kind: weapon_data["weaponType"]["name"]
+            .as_str()
+            .expect("Weapon type was empty"),
+        attack_affinity: match weapon_data["attackAffinity"].is_null() {
+            false => weapon_data["attackAffinity"]["name"]
                 .as_str()
-                .expect("Weapon name was empty, wft?"),
-            range: match weapon_data["range"].is_null() {
-                true => Some(
-                    weapon_data["range"]
-                        .as_u64()
-                        .expect("Range has a value but it wasnt a number?")
-                        as u8,
-                ),
-                false => None,
-            },
-        };
+                .expect("attack affinity was empty"),
+            true => "Unknown",
+        },
+        attack_power: parse_element_types(&weapon_data["attackPower"]),
+        guarded_negation: parse_element_types(&weapon_data["guardedNegation"]),
+        scaling: parse_scalings(&weapon_data),
+        status_ailment: match weapon_data["statusAilment"]["value"].is_null() {
+            true => None,
+            false => Some(
+                match weapon_data["statusAilment"]["statusAilmentType"]["name"]
+                    .as_str()
+                    .expect("failed to parse ailment type")
+                {
+                    "Poison" => StatusAilment::Poison(
+                        weapon_data["statusAilment"]["value"]
+                            .as_u64()
+                            .expect("failed to parse ailment value") as u8,
+                    ),
+                    "Scarlet Rot" => StatusAilment::ScarletRot(
+                        weapon_data["statusAilment"]["value"]
+                            .as_u64()
+                            .expect("failed to parse ailment value") as u8,
+                    ),
+                    "Blood Loss" => StatusAilment::BloodLoss(
+                        weapon_data["statusAilment"]["value"]
+                            .as_u64()
+                            .expect("failed to parse ailment value") as u8,
+                    ),
+                    "Frostbite" => StatusAilment::Frostbite(
+                        weapon_data["statusAilment"]["value"]
+                            .as_u64()
+                            .expect("failed to parse ailment value") as u8,
+                    ),
+                    "Sleep" => StatusAilment::Sleep(
+                        weapon_data["statusAilment"]["value"]
+                            .as_u64()
+                            .expect("failed to parse ailment value") as u8,
+                    ),
+                    "Madness" => StatusAilment::Madness(
+                        weapon_data["statusAilment"]["value"]
+                            .as_u64()
+                            .expect("failed to parse ailment value") as u8,
+                    ),
+                    "Death Blight" => StatusAilment::DeathBlight(
+                        weapon_data["statusAilment"]["value"]
+                            .as_u64()
+                            .expect("failed to parse ailment value") as u8,
+                    ),
+                    _ => panic!("unknown status ailment was found while parsing weapon"),
+                },
+            ),
+        },
+        active: match weapon_data["ashOfWar"].is_null() {
+            false => weapon_data["ashOfWar"]["name"]
+                .as_str()
+                .expect(format!("couldnt parse active skill for: {}", weapon_data).as_str()),
+            true => "Unknown",
+        },
     }
+}
+
+fn parse_element_types(json_result: &Value) -> ElementTypes {
+    let type_value = |value_index: usize| {
+        if json_result[value_index]["value"].is_null() {
+            0
+        } else {
+            json_result[value_index]["value"]
+                .as_u64()
+                .expect("value was empty or coulnt be parsed into u64") as u8
+        }
+    };
+    ElementTypes {
+        physical: type_value(0),
+        magic: type_value(1),
+        fire: type_value(2),
+        lightning: type_value(3),
+        holy: type_value(4),
+        boost: type_value(5),
+    }
+}
+
+fn parse_scalings<'a>(json_result: &'a Value) -> [Attribute<'a>; 4] {
+    let mut scalings: [Attribute; 4] = [
+        Attribute::Unknown,
+        Attribute::Unknown,
+        Attribute::Unknown,
+        Attribute::Unknown,
+    ];
+    for (array_index, scaling) in json_result["attributeScaling"]
+        .as_array()
+        .expect("failed to parse scalings as array")
+        .iter()
+        .enumerate()
+    {
+        let attribute_value = scaling["value"]
+            .as_str()
+            .expect("failed to parse attribute value as str");
+        scalings[array_index] = match scaling["attribute"]["name"]
+            .as_str()
+            .expect("failed to parse attribute name as string")
+        {
+            "Vigor" => Attribute::Vigor(attribute_value),
+            "Mind" => Attribute::Mind(attribute_value),
+            "Endurance" => Attribute::Endurance(attribute_value),
+            "Strength" => Attribute::Strength(attribute_value),
+            "Dexterity" => Attribute::Dexterity(attribute_value),
+            "Intelligence" => Attribute::Intelligence(attribute_value),
+            "Faith" => Attribute::Faith(attribute_value),
+            "Arcane" => Attribute::Arcane(attribute_value),
+            _ => panic!("found weird attribute"),
+        }
+    }
+
+    scalings
 }
 
 fn send_web_request() {
