@@ -1,12 +1,17 @@
-use std::{env, fs::OpenOptions, io};
+use std::{
+    env,
+    fs::OpenOptions,
+    io::{self},
+};
 
 use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
-    crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseEvent},
+    crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Style, Stylize},
-    widgets::{Block, List, ListDirection, ListState, Row, Table, Widget},
+    style::{Color, Style, Stylize},
+    text::{Span, Text},
+    widgets::{Block, Clear, List, ListDirection, ListState, Paragraph, Row, Table, Widget},
 };
 
 use serde_json::Value;
@@ -29,6 +34,7 @@ struct App<'a> {
     selected_index: usize,
     names_state: ListState,
     state: AppState,
+    search_str: String,
 }
 
 impl<'a> App<'a> {
@@ -43,10 +49,27 @@ impl<'a> App<'a> {
     fn draw(&mut self, frame: &mut Frame) {
         let layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
+            .constraints([Constraint::Max(50), Constraint::Fill(1)])
             .split(frame.area());
         let outer = Block::bordered().title("Details");
         let outer_area = outer.inner(layout[1]);
+
+        let search_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(35),
+                Constraint::Percentage(30),
+                Constraint::Percentage(35),
+            ])
+            .split(frame.area());
+        let search_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Length(3),
+                Constraint::Fill(1),
+            ])
+            .split(search_area[1]);
 
         let detail_view = DetailView {
             details: self.selected,
@@ -61,82 +84,80 @@ impl<'a> App<'a> {
             .highlight_style(Style::new().italic())
             .direction(ListDirection::TopToBottom);
 
+        //if let AppState::Navigating = self.state {
         frame.render_stateful_widget(names_list, layout[0], &mut self.names_state);
         frame.render_widget(&outer, layout[1]);
         frame.render_widget(&detail_view, outer_area);
+        //}
+
+        if let AppState::Searching = self.state {
+            frame.render_widget(Clear, search_area[1]);
+            frame.render_widget(
+                Paragraph::new(self.search_str.clone()).block(Block::bordered().title("Search")),
+                search_area[1],
+            );
+        }
     }
 
     fn handle_events(&mut self) -> io::Result<()> {
         match event::read()? {
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                match key_event.code {
-                    KeyCode::Char('q') => self.state = AppState::Exiting,
-                    KeyCode::Char('j') => {
-                        if self.selected_index == self.weapon_data.len() - 1 {
-                            self.selected_index = 0;
-                            self.names_state.select_first();
-                        } else {
-                            self.selected_index += 1;
-                            self.names_state.select_next();
-                        }
-                        self.selected = &self.weapon_data[self.selected_index];
-                    }
-                    KeyCode::Char('k') => {
-                        if self.selected_index == 0 {
-                            self.selected_index = self.weapon_data.len() - 1;
-                            self.names_state.select_last();
-                        } else {
-                            self.selected_index -= 1;
-                            self.names_state.select_previous();
-                        }
-                        self.selected = &self.weapon_data[self.selected_index];
-                    }
-                    KeyCode::Char('/') => {
-                        self.state = AppState::Searching;
-                        let mut search_str = String::new();
-                        // if loop finishes, on empty string nothing, on error error, on non-empty
-                        // string try to match
-                        while let AppState::Searching = self.state {
-                            search_str = match self.handle_search(search_str) {
-                                Ok(str) => str,
-                                Err => panic!("Alert"),
-                            }
-                        }
-                    }
-                    _ => (),
-                }
-            }
+            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => match self.state {
+                AppState::Navigating => self.handle_navigation(key_event.code),
+                AppState::Searching => self.handle_search(key_event.code),
+                _ => (),
+            },
             _ => {}
         }
         Ok(())
     }
 
-    // string is owned by function, needs to be returned as Ok value, on error return error/panic
-    // esc clears, char pushes, backspace pops, enter breaks loop with current string
-    fn handle_search(&mut self, search_str: String) -> io::Result<String> {
-        let event_res = match event::read() {
-            Ok(value) => value,
-            Err(err) => return Err(err),
-        };
-
-        match event_res {
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                match key_event.code {
-                    KeyCode::Esc => {
-                        search_str.clear();
-                        self.state = AppState::Navigating;
-                        Ok(search_str)
-                    }
-                    KeyCode::Char(c) => self.search_str.push(c),
-                    KeyCode::Backspace => {
-                        self.search_str.pop();
-                    }
-                    KeyCode::Enter => self.state = AppState::Navigating,
-                    _ => (),
+    fn handle_navigation(&mut self, key_code: KeyCode) {
+        match key_code {
+            KeyCode::Char('q') => self.state = AppState::Exiting,
+            KeyCode::Char('j') => {
+                if self.selected_index == self.weapon_data.len() - 1 {
+                    self.selected_index = 0;
+                    self.names_state.select_first();
+                } else {
+                    self.selected_index += 1;
+                    self.names_state.select_next();
                 }
+                self.selected = &self.weapon_data[self.selected_index];
+            }
+            KeyCode::Char('k') => {
+                if self.selected_index == 0 {
+                    self.selected_index = self.weapon_data.len() - 1;
+                    self.names_state.select_last();
+                } else {
+                    self.selected_index -= 1;
+                    self.names_state.select_previous();
+                }
+                self.selected = &self.weapon_data[self.selected_index];
+            }
+            KeyCode::Char('/') => {
+                self.state = AppState::Searching;
             }
             _ => (),
-        }
+        };
+    }
+
+    fn handle_search(&mut self, key_code: KeyCode) {
+        match key_code {
+            KeyCode::Esc => {
+                self.search_str.clear();
+                self.state = AppState::Navigating;
+            }
+            KeyCode::Char(c) => {
+                self.search_str.push(c);
+            }
+            KeyCode::Backspace => {
+                self.search_str.pop();
+            }
+            KeyCode::Enter => {
+                self.state = AppState::Navigating;
+            }
+            _ => (),
+        };
     }
 }
 
@@ -249,6 +270,7 @@ fn main() -> std::io::Result<()> {
                         selected_index: 0,
                         names_state: ListState::default().with_selected(Some(0)),
                         state: AppState::Navigating,
+                        search_str: String::new(),
                     };
                     let result = app.run(&mut terminal);
                     ratatui::restore();
