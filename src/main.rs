@@ -6,21 +6,20 @@ use std::{
 
 use ratatui::{
     DefaultTerminal, Frame,
-    buffer::Buffer,
-    crossterm::event::{self, Event, KeyCode, KeyEventKind},
-    layout::{Constraint, Direction, Layout, Rect},
+    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    layout::{Constraint, Direction, Layout},
     style::{Color, Style, Stylize},
-    text::{Span, Text},
-    widgets::{Block, Clear, List, ListDirection, ListState, Paragraph, Row, Table, Widget},
+    widgets::{Block, Clear, Paragraph, Row, Table, TableState},
 };
 
 use serde_json::Value;
 
 mod logic;
 use logic::http::send_web_request;
-use logic::weapons::Attribute;
 use logic::weapons::Weapon;
 use logic::weapons::parse_weapon_data;
+
+use crate::logic::weapons::{Attribute, StatusAilment};
 
 enum AppState {
     Navigating,
@@ -29,10 +28,11 @@ enum AppState {
 }
 
 struct App<'a> {
-    weapon_data: &'a Vec<Weapon<'a>>,
-    selected: &'a Weapon<'a>,
+    weapon_data: &'a Vec<Weapon>,
+    displayed_weapons: Vec<&'a Weapon>,
+    selected: &'a Weapon,
     selected_index: usize,
-    names_state: ListState,
+    names_state: TableState,
     state: AppState,
     search_str: String,
 }
@@ -49,7 +49,7 @@ impl<'a> App<'a> {
     fn draw(&mut self, frame: &mut Frame) {
         let layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Max(50), Constraint::Fill(1)])
+            .constraints([Constraint::Fill(1), Constraint::Max(50)])
             .split(frame.area());
         let outer = Block::bordered().title("Details");
         let outer_area = outer.inner(layout[1]);
@@ -71,24 +71,15 @@ impl<'a> App<'a> {
             ])
             .split(search_area[1]);
 
-        let detail_view = DetailView {
-            details: self.selected,
-        };
-
-        let mut names: Vec<&str> = Vec::new();
-        for weapon in self.weapon_data {
-            names.push(weapon.name);
-        }
-        let names_list = List::new(names)
-            .block(Block::bordered().title("List"))
-            .highlight_style(Style::new().italic())
-            .direction(ListDirection::TopToBottom);
-
-        //if let AppState::Navigating = self.state {
-        frame.render_stateful_widget(names_list, layout[0], &mut self.names_state);
+        let weapon_table = generate_table(&self.weapon_data);
+        frame.render_stateful_widget(weapon_table, layout[0], &mut self.names_state);
         frame.render_widget(&outer, layout[1]);
-        frame.render_widget(&detail_view, outer_area);
-        //}
+        frame.render_widget(
+            Paragraph::new("Placeholder")
+                .block(Block::default())
+                .centered(),
+            outer_area,
+        );
 
         if let AppState::Searching = self.state {
             frame.render_widget(Clear, search_area[1]);
@@ -103,7 +94,7 @@ impl<'a> App<'a> {
         match event::read()? {
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => match self.state {
                 AppState::Navigating => self.handle_navigation(key_event.code),
-                AppState::Searching => self.handle_search(key_event.code),
+                AppState::Searching => self.handle_search(key_event.code, key_event.modifiers),
                 _ => (),
             },
             _ => {}
@@ -141,14 +132,23 @@ impl<'a> App<'a> {
         };
     }
 
-    fn handle_search(&mut self, key_code: KeyCode) {
+    fn handle_search(&mut self, key_code: KeyCode, key_modifier: KeyModifiers) {
         match key_code {
             KeyCode::Esc => {
-                self.search_str.clear();
                 self.state = AppState::Navigating;
             }
             KeyCode::Char(c) => {
-                self.search_str.push(c);
+                if let KeyModifiers::CONTROL = key_modifier {
+                    if c == 'f' {
+                        self.displayed_weapons = self
+                            .weapon_data
+                            .iter()
+                            .filter(|x| x.scaling[6].is_some())
+                            .collect();
+                    }
+                } else {
+                    self.search_str.push(c);
+                }
             }
             KeyCode::Backspace => {
                 self.search_str.pop();
@@ -158,84 +158,126 @@ impl<'a> App<'a> {
             }
             _ => (),
         };
-    }
-}
 
-struct DetailView<'a> {
-    details: &'a Weapon<'a>,
-}
-
-// make more stylish, probably larger fonts
-impl<'a> Widget for &DetailView<'a> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let horizontal_center = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(20),
-                Constraint::Percentage(60),
-                Constraint::Percentage(20),
-            ])
-            .split(area);
-        let vertical_center = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(20),
-                Constraint::Min(10),
-                Constraint::Min(10),
-                Constraint::Percentage(20),
-            ])
-            .split(horizontal_center[1]);
-
-        let widths = [Constraint::Percentage(50), Constraint::Percentage(50)];
-        let rows = [
-            Row::new([
-                self.details.attack_power.physical.to_string(),
-                self.details.guarded_negation.physical.to_string(),
-            ]),
-            Row::new([
-                self.details.attack_power.magic.to_string(),
-                self.details.guarded_negation.magic.to_string(),
-            ]),
-            Row::new([
-                self.details.attack_power.fire.to_string(),
-                self.details.guarded_negation.fire.to_string(),
-            ]),
-            Row::new([
-                self.details.attack_power.lightning.to_string(),
-                self.details.guarded_negation.lightning.to_string(),
-            ]),
-            Row::new([
-                self.details.attack_power.holy.to_string(),
-                self.details.guarded_negation.holy.to_string(),
-            ]),
-            Row::new([
-                self.details.attack_power.boost.to_string(),
-                self.details.guarded_negation.boost.to_string(),
-            ]),
-        ];
-
-        let mut scalings: Vec<String> = Vec::new();
-        for x in &self.details.scaling {
-            match x {
-                Attribute::Vigor(scale) => scalings.push(format!("Vigor: {}", scale)),
-                Attribute::Mind(scale) => scalings.push(format!("Mind: {}", scale)),
-                Attribute::Endurance(scale) => scalings.push(format!("Endurance: {}", scale)),
-                Attribute::Strength(scale) => scalings.push(format!("Strength: {}", scale)),
-                Attribute::Dexterity(scale) => scalings.push(format!("Dexterity: {}", scale)),
-                Attribute::Intelligence(scale) => scalings.push(format!("Intelligence: {}", scale)),
-                Attribute::Faith(scale) => scalings.push(format!("Faith: {}", scale)),
-                Attribute::Arcane(scale) => scalings.push(format!("Arcane: {}", scale)),
-                Attribute::Unknown => (),
-            }
+        if let AppState::Searching = self.state {
+            let weapon_index = self
+                .weapon_data
+                .iter()
+                .position(|x| x.name.contains(&self.search_str));
+            self.names_state.select(weapon_index);
+            match weapon_index {
+                Some(i) => {
+                    self.selected = &self.weapon_data[i];
+                    self.selected_index = i;
+                }
+                None => {
+                    self.selected = &self.weapon_data[0];
+                    self.selected_index = 0;
+                }
+            };
+        } else {
+            self.search_str.clear();
         }
-
-        Widget::render(
-            Table::new(rows, widths).header(Row::new(["Attack", "Guard"])),
-            vertical_center[1],
-            buf,
-        );
-        Widget::render(List::new(scalings), vertical_center[2], buf);
     }
+}
+
+fn generate_table(weapons: &Vec<Weapon>) -> Table {
+    let scale_ranks = ["S", "A", "B", "C", "D", "E", "N/A"];
+    let ailments = [
+        "Poison".to_owned(),
+        "Scarlet Rot".to_owned(),
+        "Blood loss".to_owned(),
+        "Frostbite".to_owned(),
+        "Sleep".to_owned(),
+        "Madness".to_owned(),
+        "Death blight".to_owned(),
+    ];
+    let mut rows: Vec<Row> = Vec::with_capacity(weapons.len());
+    let widths = [
+        Constraint::Max(30),
+        Constraint::Max(30),
+        Constraint::Max(12),
+        Constraint::Max(12),
+        Constraint::Max(12),
+        Constraint::Max(12),
+        Constraint::Max(12),
+        Constraint::Max(12),
+        Constraint::Max(12),
+        Constraint::Max(12),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+    ];
+
+    let scaling_closure = |i: usize, w: &Weapon| -> usize {
+        match &w.scaling[i] {
+            Some(y) => match y {
+                Attribute::Vigor(v)
+                | Attribute::Mind(v)
+                | Attribute::Endurance(v)
+                | Attribute::Strength(v)
+                | Attribute::Dexterity(v)
+                | Attribute::Intelligence(v)
+                | Attribute::Faith(v)
+                | Attribute::Arcane(v) => *v,
+            },
+            None => 6,
+        }
+    };
+
+    for weapon in weapons {
+        let (ailment_type, status_ailment) = match &weapon.status_ailment {
+            Some(s_kind) => match s_kind {
+                StatusAilment::Poison(val) => (ailments[0].to_owned(), val.to_owned()),
+                StatusAilment::ScarletRot(val) => (ailments[1].to_owned(), val.to_owned()),
+                StatusAilment::BloodLoss(val) => (ailments[2].to_owned(), val.to_owned()),
+                StatusAilment::Frostbite(val) => (ailments[3].to_owned(), val.to_owned()),
+                StatusAilment::Sleep(val) => (ailments[4].to_owned(), val.to_owned()),
+                StatusAilment::Madness(val) => (ailments[5].to_owned(), val.to_owned()),
+                StatusAilment::DeathBlight(val) => (ailments[6].to_owned(), val.to_owned()),
+            },
+            None => ("N/A".to_owned(), "N/A".to_owned()),
+        };
+
+        let weapon_row = Row::new([
+            weapon.name.to_owned(),
+            weapon.attack_affinity.to_owned(),
+            scale_ranks[scaling_closure(0, weapon)].to_owned(),
+            scale_ranks[scaling_closure(1, weapon)].to_owned(),
+            scale_ranks[scaling_closure(2, weapon)].to_owned(),
+            scale_ranks[scaling_closure(3, weapon)].to_owned(),
+            scale_ranks[scaling_closure(4, weapon)].to_owned(),
+            scale_ranks[scaling_closure(5, weapon)].to_owned(),
+            scale_ranks[scaling_closure(6, weapon)].to_owned(),
+            scale_ranks[scaling_closure(7, weapon)].to_owned(),
+            weapon.attack_power.physical.to_owned(),
+            weapon.guarded_negation.physical.to_owned(),
+            ailment_type,
+            status_ailment,
+        ]);
+        rows.push(weapon_row);
+    }
+    Table::new(rows, widths)
+        .header(
+            Row::new([
+                "Name",
+                "Attack affinity",
+                "Vigor",
+                "Mind",
+                "Endurance",
+                "Strength",
+                "Dexterity",
+                "Intelligence",
+                "Faith",
+                "Arcane",
+                "Attack Power",
+                "Guarded Negation",
+                "Ailment Type",
+                "Ailment value",
+            ])
+            .style(Style::new().bold()),
+        )
+        .row_highlight_style(Style::new().italic().fg(Color::Black).bg(Color::White))
 }
 
 fn main() -> std::io::Result<()> {
@@ -268,7 +310,7 @@ fn main() -> std::io::Result<()> {
                         weapon_data: &weapon_data,
                         selected: &weapon_data[0],
                         selected_index: 0,
-                        names_state: ListState::default().with_selected(Some(0)),
+                        names_state: TableState::default().with_selected(Some(0)),
                         state: AppState::Navigating,
                         search_str: String::new(),
                     };

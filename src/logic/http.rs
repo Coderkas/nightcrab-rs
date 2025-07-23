@@ -84,7 +84,8 @@ fn build_request() -> String {
         .create(true)
         .open("./res/Weapons.graphql")
         .expect("file creation failed")
-        .read_to_string(&mut graphql_part);
+        .read_to_string(&mut graphql_part)
+        .expect("failed to write anything into file");
     graphql_part.retain(|c| !c.is_control());
     let json_part = format!(
         "{{\"variables\":{{\"input\":{{\"staticDataTypes\":[\"weapons\"]}}}},\"query\":\"{gq}\"}}",
