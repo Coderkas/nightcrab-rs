@@ -1,25 +1,25 @@
 use serde_json::Value;
 
-pub struct Weapon {
-    pub name: String,
+pub struct Weapon<'a> {
+    pub name: &'a str,
     pub range: Option<u8>,
-    pub passive: Option<String>,
-    pub kind: String,
-    pub attack_affinity: String,
-    pub attack_power: ElementTypes,
-    pub guarded_negation: ElementTypes,
+    pub passive: Option<&'a str>,
+    pub kind: &'a str,
+    pub attack_affinity: Option<&'a str>,
+    pub attack_power: [ElementTypes; 6],
+    pub guarded_negation: [ElementTypes; 6],
     pub scaling: [Option<Attribute>; 8],
     pub status_ailment: Option<StatusAilment>,
-    pub active: String,
+    pub active: Option<&'a str>,
 }
 
-pub struct ElementTypes {
-    pub physical: String,
-    pub magic: String,
-    pub fire: String,
-    pub lightning: String,
-    pub holy: String,
-    pub boost: String,
+pub enum ElementTypes {
+    Physical(u8),
+    Magic(u8),
+    Fire(u8),
+    Lightning(u8),
+    Holy(u8),
+    Boost(u8),
 }
 
 pub enum Attribute {
@@ -34,21 +34,20 @@ pub enum Attribute {
 }
 
 pub enum StatusAilment {
-    Poison(String),
-    ScarletRot(String),
-    BloodLoss(String),
-    Frostbite(String),
-    Sleep(String),
-    Madness(String),
-    DeathBlight(String),
+    Poison(u8),
+    ScarletRot(u8),
+    BloodLoss(u8),
+    Frostbite(u8),
+    Sleep(u8),
+    Madness(u8),
+    DeathBlight(u8),
 }
 
 pub fn parse_weapon_data(weapon_data: &Value) -> Weapon {
     Weapon {
         name: weapon_data["name"]
             .as_str()
-            .expect("Weapon name was empty, wft?")
-            .to_owned(),
+            .expect("Weapon name was empty, wft?"),
         range: match weapon_data["range"].is_null() {
             false => Some(
                 weapon_data["range"]
@@ -57,111 +56,77 @@ pub fn parse_weapon_data(weapon_data: &Value) -> Weapon {
             ),
             true => None,
         },
-        passive: match weapon_data["weaponPassive"].is_null() {
-            false => Some(
-                weapon_data["weaponPassive"]["name"]
-                    .as_str()
-                    .expect("Weapon passive was not empty, but name was empty?")
-                    .to_owned(),
-            ),
-            true => None,
-        },
+        passive: get_node_name(weapon_data, "weaponPassive"),
         kind: weapon_data["weaponType"]["name"]
             .as_str()
-            .expect("Weapon type was empty")
-            .to_owned(),
-        attack_affinity: match weapon_data["attackAffinity"].is_null() {
-            false => weapon_data["attackAffinity"]["name"]
-                .as_str()
-                .expect("attack affinity was empty")
-                .to_owned(),
-            true => "Unknown".to_owned(),
-        },
-        attack_power: parse_element_types(&weapon_data["attackPower"]),
-        guarded_negation: parse_element_types(&weapon_data["guardedNegation"]),
+            .expect("Weapon type was empty"),
+        attack_affinity: get_node_name(weapon_data, "attackAffinity"),
+        attack_power: [
+            ElementTypes::Physical(get_element_val(&weapon_data["attackPower"], 0)),
+            ElementTypes::Magic(get_element_val(&weapon_data["attackPower"], 1)),
+            ElementTypes::Fire(get_element_val(&weapon_data["attackPower"], 2)),
+            ElementTypes::Lightning(get_element_val(&weapon_data["attackPower"], 3)),
+            ElementTypes::Holy(get_element_val(&weapon_data["attackPower"], 4)),
+            ElementTypes::Boost(get_element_val(&weapon_data["attackPower"], 5)),
+        ],
+        guarded_negation: [
+            ElementTypes::Physical(get_element_val(&weapon_data["guardedNegation"], 0)),
+            ElementTypes::Magic(get_element_val(&weapon_data["guardedNegation"], 1)),
+            ElementTypes::Fire(get_element_val(&weapon_data["guardedNegation"], 2)),
+            ElementTypes::Lightning(get_element_val(&weapon_data["guardedNegation"], 3)),
+            ElementTypes::Holy(get_element_val(&weapon_data["guardedNegation"], 4)),
+            ElementTypes::Boost(get_element_val(&weapon_data["guardedNegation"], 5)),
+        ],
         scaling: parse_scalings(weapon_data),
         status_ailment: match weapon_data["statusAilment"]["value"].is_null() {
             true => None,
-            false => Some(
-                match weapon_data["statusAilment"]["statusAilmentType"]["name"]
-                    .as_str()
-                    .expect("failed to parse ailment type")
-                {
-                    "Poison" => StatusAilment::Poison(
-                        weapon_data["statusAilment"]["value"]
-                            .as_u64()
-                            .expect("failed to parse ailment value")
-                            .to_string(),
-                    ),
-                    "Scarlet Rot" => StatusAilment::ScarletRot(
-                        weapon_data["statusAilment"]["value"]
-                            .as_u64()
-                            .expect("failed to parse ailment value")
-                            .to_string(),
-                    ),
-                    "Blood Loss" => StatusAilment::BloodLoss(
-                        weapon_data["statusAilment"]["value"]
-                            .as_u64()
-                            .expect("failed to parse ailment value")
-                            .to_string(),
-                    ),
-                    "Frostbite" => StatusAilment::Frostbite(
-                        weapon_data["statusAilment"]["value"]
-                            .as_u64()
-                            .expect("failed to parse ailment value")
-                            .to_string(),
-                    ),
-                    "Sleep" => StatusAilment::Sleep(
-                        weapon_data["statusAilment"]["value"]
-                            .as_u64()
-                            .expect("failed to parse ailment value")
-                            .to_string(),
-                    ),
-                    "Madness" => StatusAilment::Madness(
-                        weapon_data["statusAilment"]["value"]
-                            .as_u64()
-                            .expect("failed to parse ailment value")
-                            .to_string(),
-                    ),
-                    "Death Blight" => StatusAilment::DeathBlight(
-                        weapon_data["statusAilment"]["value"]
-                            .as_u64()
-                            .expect("failed to parse ailment value")
-                            .to_string(),
-                    ),
-                    _ => panic!("unknown status ailment was found while parsing weapon"),
-                },
-            ),
+            false => Some(get_ailment(weapon_data)),
         },
-        active: match weapon_data["ashOfWar"].is_null() {
-            false => weapon_data["ashOfWar"]["name"]
-                .as_str()
-                .expect(format!("couldnt parse active skill for: {}", weapon_data).as_str())
-                .to_owned(),
-            true => "Unknown".to_owned(),
-        },
+        active: get_node_name(weapon_data, "ashOfWar"),
     }
 }
 
-fn parse_element_types(json_result: &Value) -> ElementTypes {
-    let type_value = |value_index: usize| {
-        if json_result[value_index]["value"].is_null() {
-            String::from("N/A")
-        } else {
-            json_result[value_index]["value"]
-                .as_u64()
-                .expect("value was empty or coulnt be parsed into u64")
-                .to_string()
-        }
-    };
+fn get_node_name<'a>(json_result: &'a Value, node_name: &str) -> Option<&'a str> {
+    let err_str = format!(
+        "Node was not empty but value was? For object: {}",
+        json_result
+    );
+    match json_result[node_name].is_null() {
+        true => None,
+        false => Some(
+            json_result[node_name]["name"]
+                .as_str()
+                .expect(err_str.as_str()),
+        ),
+    }
+}
 
-    ElementTypes {
-        physical: type_value(0),
-        magic: type_value(1),
-        fire: type_value(2),
-        lightning: type_value(3),
-        holy: type_value(4),
-        boost: type_value(5),
+fn get_element_val(json_result: &Value, value_index: usize) -> u8 {
+    if json_result[value_index]["value"].is_null() {
+        0
+    } else {
+        json_result[value_index]["value"]
+            .as_u64()
+            .expect("value was empty or coulnt be parsed into u64") as u8
+    }
+}
+
+fn get_ailment(json_result: &Value) -> StatusAilment {
+    let value = json_result["statusAilment"]["value"]
+        .as_u64()
+        .expect("failed to parse ailment value") as u8;
+    match json_result["statusAilment"]["statusAilmentType"]["name"]
+        .as_str()
+        .expect("failed to parse ailment type")
+    {
+        "Poison" => StatusAilment::Poison(value),
+        "Scarlet Rot" => StatusAilment::ScarletRot(value),
+        "Blood Loss" => StatusAilment::BloodLoss(value),
+        "Frostbite" => StatusAilment::Frostbite(value),
+        "Sleep" => StatusAilment::Sleep(value),
+        "Madness" => StatusAilment::Madness(value),
+        "Death Blight" => StatusAilment::DeathBlight(value),
+        _ => panic!("unknown status ailment was found while parsing weapon"),
     }
 }
 
