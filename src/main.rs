@@ -2,6 +2,7 @@ use std::{
     env,
     fs::OpenOptions,
     io::{self},
+    rc::Rc,
 };
 
 use ratatui::{
@@ -28,15 +29,14 @@ enum AppState {
 }
 
 struct App<'a> {
-    weapon_data: Vec<Weapon<'a>>,
-    displayed_weapons: Vec<&'a Weapon<'a>>,
-    selected_index: usize,
+    weapon_data: Vec<Rc<Weapon<'a>>>,
+    displayed_weapons: Vec<Rc<Weapon<'a>>>,
     table_state: TableState,
     app_state: AppState,
     search_str: String,
 }
 
-pub fn run(mut app: App, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+fn run(mut app: App, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
     while let AppState::Navigating | AppState::Searching = app.app_state {
         terminal.draw(|frame| draw(&mut app, frame))?;
         app = handle_events(app)?;
@@ -103,20 +103,16 @@ fn handle_navigation(mut app: App, key_code: KeyCode) -> App {
     match key_code {
         KeyCode::Char('q') => app.app_state = AppState::Exiting,
         KeyCode::Char('j') => {
-            if app.selected_index == app.weapon_data.len() - 1 {
-                app.selected_index = 0;
+            if app.table_state.offset() == app.weapon_data.len() - 1 {
                 app.table_state.select_first();
             } else {
-                app.selected_index += 1;
                 app.table_state.select_next();
             }
         }
         KeyCode::Char('k') => {
-            if app.selected_index == 0 {
-                app.selected_index = app.weapon_data.len() - 1;
+            if app.table_state.offset() == 0 {
                 app.table_state.select_last();
             } else {
-                app.selected_index -= 1;
                 app.table_state.select_previous();
             }
         }
@@ -132,14 +128,17 @@ fn handle_search(mut app: App, key_code: KeyCode, key_modifier: KeyModifiers) ->
     match key_code {
         KeyCode::Esc => {
             app.app_state = AppState::Navigating;
+            app.displayed_weapons = app.weapon_data.clone();
         }
         KeyCode::Char(c) => {
             if let KeyModifiers::CONTROL = key_modifier {
                 if c == 'f' {
-                    // Either use a Reference Counter or let the second vector just store the
-                    // indices of the filtered items
-                    app.displayed_weapons =
-                        app.weapon_data.iter().filter(|x| x.scaling[6].is_some())
+                    app.displayed_weapons.clear();
+                    app.weapon_data
+                        .iter()
+                        .filter(|w| w.scaling[6].is_some())
+                        .for_each(|w| app.displayed_weapons.push(w.clone()));
+                    app.app_state = AppState::Navigating;
                 }
             } else {
                 app.search_str.push(c);
@@ -155,26 +154,18 @@ fn handle_search(mut app: App, key_code: KeyCode, key_modifier: KeyModifiers) ->
     };
 
     if let AppState::Searching = app.app_state {
-        let weapon_index = app
-            .weapon_data
-            .iter()
-            .position(|x| x.name.contains(&app.search_str));
-        app.table_state.select(weapon_index);
-        match weapon_index {
-            Some(i) => {
-                app.selected_index = i;
-            }
-            None => {
-                app.selected_index = 0;
-            }
-        };
+        app.table_state.select(
+            app.displayed_weapons
+                .iter()
+                .position(|w| w.name.contains(&app.search_str)),
+        );
     } else {
         app.search_str.clear();
     }
     app
 }
 
-fn generate_table<'a>(weapons: &'a Vec<&'a Weapon>) -> Table<'a> {
+fn generate_table<'a>(weapons: &Vec<Rc<Weapon>>) -> Table<'a> {
     let scale_ranks = ["S", "A", "B", "C", "D", "E", "N/A"];
     let ailments = [
         "Poison",
@@ -309,12 +300,13 @@ fn main() -> std::io::Result<()> {
                         .as_array()
                         .expect("Arrary of data.staticDataEnity wasnt an array")
                     {
-                        weapon_data.push(parse_weapon_data(&weapon["data"]["staticDataEntity"]));
+                        weapon_data.push(Rc::new(parse_weapon_data(
+                            &weapon["data"]["staticDataEntity"],
+                        )));
                     }
                     let app = App {
-                        weapon_data: weapon_data,
-                        displayed_weapons: Vec::new(),
-                        selected_index: 0,
+                        weapon_data: weapon_data.clone(),
+                        displayed_weapons: weapon_data,
                         table_state: TableState::default().with_selected(Some(0)),
                         app_state: AppState::Navigating,
                         search_str: String::new(),
