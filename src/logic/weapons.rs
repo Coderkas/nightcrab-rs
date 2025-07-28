@@ -43,19 +43,22 @@ pub enum StatusAilment {
     DeathBlight(u8),
 }
 
+#[allow(clippy::cast_possible_truncation)]
 pub fn parse_weapon_data(weapon_data: &Value) -> Weapon {
     Weapon {
         name: weapon_data["name"]
             .as_str()
             .expect("Weapon name was empty, wft?"),
-        range: match weapon_data["range"].is_null() {
-            false => Some(
+        range: if weapon_data["range"].is_null() {
+            None
+        } else {
+            Some(
                 weapon_data["range"]
                     .as_u64()
                     .expect("Range has a value but it wasnt a number?") as u8,
-            ),
-            true => None,
+            )
         },
+
         passive: get_node_name(weapon_data, "weaponPassive"),
         kind: weapon_data["weaponType"]["name"]
             .as_str()
@@ -78,29 +81,26 @@ pub fn parse_weapon_data(weapon_data: &Value) -> Weapon {
             ElementTypes::Boost(get_element_val(&weapon_data["guardedNegation"], 5)),
         ],
         scaling: parse_scalings(weapon_data),
-        status_ailment: match weapon_data["statusAilment"]["value"].is_null() {
-            true => None,
-            false => Some(get_ailment(weapon_data)),
+        status_ailment: if weapon_data["statusAilment"]["value"].is_null() {
+            None
+        } else {
+            Some(get_ailment(weapon_data))
         },
         active: get_node_name(weapon_data, "ashOfWar"),
     }
 }
 
 fn get_node_name<'a>(json_result: &'a Value, node_name: &str) -> Option<&'a str> {
-    let err_str = format!(
-        "Node was not empty but value was? For object: {}",
-        json_result
-    );
-    match json_result[node_name].is_null() {
-        true => None,
-        false => Some(
-            json_result[node_name]["name"]
-                .as_str()
-                .expect(err_str.as_str()),
-        ),
+    if json_result[node_name].is_null() {
+        None
+    } else {
+        Some(json_result[node_name]["name"].as_str().unwrap_or_else(|| {
+            panic!("Node was not empty but value was? For object: {json_result}")
+        }))
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn get_element_val(json_result: &Value, value_index: usize) -> u8 {
     if json_result[value_index]["value"].is_null() {
         0
@@ -111,6 +111,7 @@ fn get_element_val(json_result: &Value, value_index: usize) -> u8 {
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn get_ailment(json_result: &Value) -> StatusAilment {
     let value = json_result["statusAilment"]["value"]
         .as_u64()
@@ -136,7 +137,6 @@ fn parse_scalings(json_result: &Value) -> [Option<Attribute>; 8] {
     for scaling in json_result["attributeScaling"]
         .as_array()
         .expect("failed to parse scalings as array")
-        .iter()
     {
         let attribute_value: usize = match scaling["value"]
             .as_str()

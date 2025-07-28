@@ -20,7 +20,7 @@ pub fn send_web_request() {
 
     let config = Arc::new(config);
     let server_name = ServerName::try_from(hostname).expect("failed server naem thing");
-    let sock = TcpStream::connect(format!("{}:443", hostname)).expect("Socket connection failed");
+    let sock = TcpStream::connect(format!("{hostname}:443")).expect("Socket connection failed");
     let conn: ClientConnection =
         ClientConnection::new(config, server_name).expect("TLS connection failed");
     let mut tls = StreamOwned::new(conn, sock);
@@ -45,20 +45,20 @@ pub fn send_web_request() {
             Ok(0) => break,
             Ok(buf_size) => buf_size > 6,
             Err(err) => {
-                println!("{}", err);
+                println!("{err}");
                 break;
             }
         };
 
-        if string_buf.starts_with("{") {
+        if string_buf.starts_with('{') {
             content_start = true;
         }
 
         string_buf.truncate(string_buf.len() - 2);
         if content_start && content_line {
-            json_file.write(string_buf.as_bytes()).expect("error");
+            json_file.write_all(string_buf.as_bytes()).expect("error");
         } else {
-            println!("{}", string_buf)
+            println!("{string_buf}");
         }
         string_buf.clear();
     }
@@ -88,8 +88,7 @@ fn build_request() -> String {
         .expect("failed to write anything into file");
     graphql_part.retain(|c| !c.is_control());
     let json_part = format!(
-        "{{\"variables\":{{\"input\":{{\"staticDataTypes\":[\"weapons\"]}}}},\"query\":\"{gq}\"}}",
-        gq = graphql_part
+        "{{\"variables\":{{\"input\":{{\"staticDataTypes\":[\"weapons\"]}}}},\"query\":\"{graphql_part}\"}}"
     );
     let con_len = format!("Content-Length: {}", json_part.len());
     base_request[7] = &con_len;

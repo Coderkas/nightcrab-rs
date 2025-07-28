@@ -1,9 +1,4 @@
-use std::{
-    env,
-    fs::OpenOptions,
-    io::{self},
-    rc::Rc,
-};
+use std::{env, fs::OpenOptions, rc::Rc};
 
 use ratatui::{
     DefaultTerminal, Frame,
@@ -36,12 +31,13 @@ struct App<'a> {
     search_str: String,
 }
 
-fn run(mut app: App, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+fn run(app: &mut App, terminal: &mut DefaultTerminal) {
     while let AppState::Navigating | AppState::Searching = app.app_state {
-        terminal.draw(|frame| draw(&mut app, frame))?;
-        app = handle_events(app)?;
+        terminal
+            .draw(|frame| draw(app, frame))
+            .expect("Terminal rendering broke. Oh shit.");
+        handle_events(app);
     }
-    Ok(())
 }
 
 fn draw(app: &mut App, frame: &mut Frame) {
@@ -79,7 +75,7 @@ fn draw(app: &mut App, frame: &mut Frame) {
         outer_area,
     );
 
-    if let AppState::Searching = app.app_state {
+    if matches!(app.app_state, AppState::Searching) {
         frame.render_widget(Clear, search_area[1]);
         frame.render_widget(
             Paragraph::new(app.search_str.clone()).block(Block::bordered().title("Search")),
@@ -87,30 +83,31 @@ fn draw(app: &mut App, frame: &mut Frame) {
         );
     }
 }
-fn handle_events(mut app: App) -> io::Result<App> {
-    match event::read()? {
+fn handle_events(app: &mut App) {
+    match event::read().unwrap_or_else(|err| {
+        panic!("Something went very wrong while waiting for keyboard input. Error: {err}")
+    }) {
         Event::Key(key_event) if key_event.kind == KeyEventKind::Press => match app.app_state {
-            AppState::Navigating => app = handle_navigation(app, key_event.code),
-            AppState::Searching => app = handle_search(app, key_event.code, key_event.modifiers),
-            _ => (),
+            AppState::Navigating => handle_navigation(app, key_event.code),
+            AppState::Searching => handle_search(app, key_event.code, key_event.modifiers),
+            AppState::Exiting => (),
         },
-        _ => {}
+        _ => (),
     }
-    Ok(app)
 }
 
-fn handle_navigation(mut app: App, key_code: KeyCode) -> App {
+fn handle_navigation(app: &mut App, key_code: KeyCode) {
     match key_code {
         KeyCode::Char('q') => app.app_state = AppState::Exiting,
         KeyCode::Char('j') => {
-            if app.table_state.offset() == app.weapon_data.len() - 1 {
+            if app.table_state.selected().unwrap_or(0) == app.weapon_data.len() - 1 {
                 app.table_state.select_first();
             } else {
                 app.table_state.select_next();
             }
         }
         KeyCode::Char('k') => {
-            if app.table_state.offset() == 0 {
+            if app.table_state.selected().unwrap_or(0) == 0 {
                 app.table_state.select_last();
             } else {
                 app.table_state.select_previous();
@@ -120,40 +117,27 @@ fn handle_navigation(mut app: App, key_code: KeyCode) -> App {
             app.app_state = AppState::Searching;
         }
         _ => (),
-    };
-    app
+    }
 }
 
-fn handle_search(mut app: App, key_code: KeyCode, key_modifier: KeyModifiers) -> App {
+fn handle_search(app: &mut App, key_code: KeyCode, key_modifier: KeyModifiers) {
     match key_code {
         KeyCode::Esc => {
             app.app_state = AppState::Navigating;
             app.displayed_weapons = app.weapon_data.clone();
         }
-        KeyCode::Char(c) => {
-            if let KeyModifiers::CONTROL = key_modifier {
-                if c == 'f' {
-                    app.displayed_weapons.clear();
-                    app.weapon_data
-                        .iter()
-                        .filter(|w| w.scaling[6].is_some())
-                        .for_each(|w| app.displayed_weapons.push(w.clone()));
-                    app.app_state = AppState::Navigating;
-                }
-            } else {
-                app.search_str.push(c);
-            }
+        KeyCode::Char(c) if KeyModifiers::CONTROL == key_modifier => {
+            activate_filter(c, &mut app.weapon_data, &mut app.displayed_weapons)
         }
+        KeyCode::Char(c) => app.search_str.push(c),
         KeyCode::Backspace => {
             app.search_str.pop();
         }
-        KeyCode::Enter => {
-            app.app_state = AppState::Navigating;
-        }
+        KeyCode::Enter => app.app_state = AppState::Navigating,
         _ => (),
-    };
+    }
 
-    if let AppState::Searching = app.app_state {
+    if matches!(app.app_state, AppState::Searching) {
         app.table_state.select(
             app.displayed_weapons
                 .iter()
@@ -162,10 +146,49 @@ fn handle_search(mut app: App, key_code: KeyCode, key_modifier: KeyModifiers) ->
     } else {
         app.search_str.clear();
     }
-    app
 }
 
-fn generate_table<'a>(weapons: &Vec<Rc<Weapon>>) -> Table<'a> {
+fn activate_filter<'a>(
+    key: char,
+    weapons: &mut Vec<Rc<Weapon<'a>>>,
+    displayed: &mut Vec<Rc<Weapon<'a>>>,
+) {
+    displayed.clear();
+    let attribute_index: usize = match key {
+        'v' => 0,
+        'm' => 1,
+        'e' => 2,
+        's' => 3,
+        'd' => 4,
+        'i' => 5,
+        'f' => 6,
+        'a' => 7,
+        _ => return,
+    };
+
+    weapons
+        .iter()
+        .filter(|w| w.scaling[attribute_index].is_some())
+        .for_each(|w| displayed.push(w.clone()));
+
+    let scaling_closure = |i: usize, w: &Weapon| -> usize {
+        w.scaling[i].as_ref().map_or(6, |y| match y {
+            Attribute::Vigor(v)
+            | Attribute::Mind(v)
+            | Attribute::Endurance(v)
+            | Attribute::Strength(v)
+            | Attribute::Dexterity(v)
+            | Attribute::Intelligence(v)
+            | Attribute::Faith(v)
+            | Attribute::Arcane(v) => *v,
+        })
+    };
+    displayed.sort_by(|p, c| {
+        scaling_closure(attribute_index, p).cmp(&scaling_closure(attribute_index, c))
+    });
+}
+
+fn generate_table<'a>(weapons: &'a Vec<Rc<Weapon>>) -> Table<'a> {
     let scale_ranks = ["S", "A", "B", "C", "D", "E", "N/A"];
     let ailments = [
         "Poison",
@@ -195,19 +218,16 @@ fn generate_table<'a>(weapons: &Vec<Rc<Weapon>>) -> Table<'a> {
     ];
 
     let scaling_closure = |i: usize, w: &Weapon| -> usize {
-        match &w.scaling[i] {
-            Some(y) => match y {
-                Attribute::Vigor(v)
-                | Attribute::Mind(v)
-                | Attribute::Endurance(v)
-                | Attribute::Strength(v)
-                | Attribute::Dexterity(v)
-                | Attribute::Intelligence(v)
-                | Attribute::Faith(v)
-                | Attribute::Arcane(v) => *v,
-            },
-            None => 6,
-        }
+        w.scaling[i].as_ref().map_or(6, |y| match y {
+            Attribute::Vigor(v)
+            | Attribute::Mind(v)
+            | Attribute::Endurance(v)
+            | Attribute::Strength(v)
+            | Attribute::Dexterity(v)
+            | Attribute::Intelligence(v)
+            | Attribute::Faith(v)
+            | Attribute::Arcane(v) => *v,
+        })
     };
 
     let atk_grd_closure = |i: usize, w: &[ElementTypes; 6]| -> u8 {
@@ -222,18 +242,19 @@ fn generate_table<'a>(weapons: &Vec<Rc<Weapon>>) -> Table<'a> {
     };
 
     for weapon in weapons {
-        let (ailment_type, status_ailment) = match &weapon.status_ailment {
-            Some(s_kind) => match s_kind {
-                StatusAilment::Poison(val) => (ailments[0], val),
-                StatusAilment::ScarletRot(val) => (ailments[1], val),
-                StatusAilment::BloodLoss(val) => (ailments[2], val),
-                StatusAilment::Frostbite(val) => (ailments[3], val),
-                StatusAilment::Sleep(val) => (ailments[4], val),
-                StatusAilment::Madness(val) => (ailments[5], val),
-                StatusAilment::DeathBlight(val) => (ailments[6], val),
-            },
-            None => (ailments[7], &0),
-        };
+        let (ailment_type, status_ailment) =
+            weapon
+                .status_ailment
+                .as_ref()
+                .map_or((ailments[7], &0), |s_kind| match s_kind {
+                    StatusAilment::Poison(val) => (ailments[0], val),
+                    StatusAilment::ScarletRot(val) => (ailments[1], val),
+                    StatusAilment::BloodLoss(val) => (ailments[2], val),
+                    StatusAilment::Frostbite(val) => (ailments[3], val),
+                    StatusAilment::Sleep(val) => (ailments[4], val),
+                    StatusAilment::Madness(val) => (ailments[5], val),
+                    StatusAilment::DeathBlight(val) => (ailments[6], val),
+                });
 
         let weapon_row = Row::new([
             weapon.name.to_owned(),
@@ -276,7 +297,7 @@ fn generate_table<'a>(weapons: &Vec<Rc<Weapon>>) -> Table<'a> {
         .row_highlight_style(Style::new().italic().fg(Color::Black).bg(Color::White))
 }
 
-fn main() -> std::io::Result<()> {
+fn main() {
     let mut terminal = ratatui::init();
 
     let arg = env::args()
@@ -285,54 +306,46 @@ fn main() -> std::io::Result<()> {
 
     match arg.as_str() {
         "run" => {
-            match OpenOptions::new()
+            if let Ok(f) = OpenOptions::new()
                 .write(false)
                 .read(true)
                 .open("weapons.json")
             {
-                Ok(f) => {
-                    let json_values: Result<Value, serde_json::Error> = serde_json::from_reader(f);
-                    let weapon_json = &json_values
-                        .expect("Failed in parsing json to serde value struct")["data"]["game"]["documents"]
-                        ["wikiDocuments"]["documents"];
-                    let mut weapon_data = Vec::new();
-                    for weapon in weapon_json
-                        .as_array()
-                        .expect("Arrary of data.staticDataEnity wasnt an array")
-                    {
-                        weapon_data.push(Rc::new(parse_weapon_data(
-                            &weapon["data"]["staticDataEntity"],
-                        )));
-                    }
-                    let app = App {
-                        weapon_data: weapon_data.clone(),
-                        displayed_weapons: weapon_data,
-                        table_state: TableState::default().with_selected(Some(0)),
-                        app_state: AppState::Navigating,
-                        search_str: String::new(),
-                    };
-                    let result = run(app, &mut terminal);
-                    ratatui::restore();
-                    result
+                let json_values: Result<Value, serde_json::Error> = serde_json::from_reader(f);
+                let weapon_json = &json_values
+                    .expect("Failed in parsing json to serde value struct")["data"]["game"]["documents"]
+                    ["wikiDocuments"]["documents"];
+                let mut weapon_data = Vec::new();
+                for weapon in weapon_json
+                    .as_array()
+                    .expect("Arrary of data.staticDataEnity wasnt an array")
+                {
+                    weapon_data.push(Rc::new(parse_weapon_data(
+                        &weapon["data"]["staticDataEntity"],
+                    )));
                 }
-                Err(err) => Err(err),
+                let mut app = App {
+                    weapon_data: weapon_data.clone(),
+                    displayed_weapons: weapon_data,
+                    table_state: TableState::default().with_selected(Some(0)),
+                    app_state: AppState::Navigating,
+                    search_str: String::new(),
+                };
+                run(&mut app, &mut terminal);
+                ratatui::restore();
             }
         }
         "update" => {
             OpenOptions::new()
                 .write(true)
+                .truncate(true)
                 .create(true)
                 .open("weapons.json")
                 .expect("File");
             send_web_request();
-            Ok(())
         }
         _ => {
-            println!(
-                "Unknown argument '{}' provided. Possible options are 'run', 'update'",
-                arg
-            );
-            Ok(())
+            println!("Unknown argument '{arg}' provided. Possible options are 'run', 'update'");
         }
     }
 }
