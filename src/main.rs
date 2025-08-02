@@ -1,9 +1,14 @@
-use std::{env, fs::OpenOptions, rc::Rc};
+use std::{
+    env,
+    fs::OpenOptions,
+    process::{Command, Stdio},
+    rc::Rc,
+};
 
 use ratatui::{
     DefaultTerminal, Frame,
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Style, Stylize},
     widgets::{Block, Clear, Paragraph, Row, Table, TableState},
 };
@@ -15,7 +20,7 @@ use logic::http::send_web_request;
 use logic::weapons::Weapon;
 use logic::weapons::parse_weapon_data;
 
-use crate::logic::weapons::{Attribute, ElementTypes, StatusAilment};
+use crate::logic::weapons::{AttributeScaling, StatusAilment};
 
 enum AppState {
     Navigating,
@@ -29,6 +34,8 @@ struct App<'a> {
     table_state: TableState,
     app_state: AppState,
     search_str: String,
+    curr_filter: usize,
+    test_string: String,
 }
 
 fn run(app: &mut App, terminal: &mut DefaultTerminal) {
@@ -41,48 +48,92 @@ fn run(app: &mut App, terminal: &mut DefaultTerminal) {
 }
 
 fn draw(app: &mut App, frame: &mut Frame) {
-    let layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Fill(1), Constraint::Max(50)])
-        .split(frame.area());
-    let outer = Block::bordered().title("Details");
-    let outer_area = outer.inner(layout[1]);
-
-    let search_area = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(35),
-            Constraint::Percentage(30),
-            Constraint::Percentage(35),
-        ])
-        .split(frame.area());
-    let search_area = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Fill(1),
-            Constraint::Length(3),
-            Constraint::Fill(1),
-        ])
-        .split(search_area[1]);
+    let [table_area, info_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Max(50)]).areas(frame.area());
+    let info_block = Block::bordered().title("Details");
+    let info_inner = info_block.inner(info_area);
 
     let weapon_table = generate_table(&app.displayed_weapons);
-    frame.render_stateful_widget(weapon_table, layout[0], &mut app.table_state);
-    frame.render_widget(&outer, layout[1]);
+    frame.render_stateful_widget(weapon_table, table_area, &mut app.table_state);
+    frame.render_widget(&info_block, info_area);
     frame.render_widget(
-        Paragraph::new("Placeholder")
+        Paragraph::new(app.test_string.clone())
             .block(Block::default())
             .centered(),
-        outer_area,
+        info_inner,
     );
 
     if matches!(app.app_state, AppState::Searching) {
-        frame.render_widget(Clear, search_area[1]);
+        let popup_area = prepare_popup(Constraint::Percentage(30), Constraint::Length(9), frame);
+        draw_filter_widget(app, frame, popup_area);
+    }
+}
+
+fn prepare_popup(width: Constraint, height: Constraint, frame: &mut Frame) -> Rect {
+    let [widget_area] = Layout::horizontal([width])
+        .flex(Flex::Center)
+        .areas(frame.area());
+    let [widget_area] = Layout::vertical([height])
+        .flex(Flex::Center)
+        .areas(widget_area);
+    let widget_block = Block::bordered();
+    let inner_area = widget_block.inner(widget_area);
+    frame.render_widget(Clear, inner_area);
+    frame.render_widget(widget_block, widget_area);
+    inner_area
+}
+
+fn draw_filter_widget(app: &mut App, frame: &mut Frame, popup_area: Rect) {
+    let [search_area, _, checkboxes_area] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Length(3),
+    ])
+    .areas(popup_area);
+
+    const AVAILABLE_FILTERS: [&str; 5] =
+        ["Strength", "Dexterity", "Intelligence", "Faith", "Arcane"];
+    const BORDERED_BOX_WIDTH: u16 = 3;
+    const FILTER_NAME_PADDING: u16 = 3;
+    let filter_lengths =
+        AVAILABLE_FILTERS.map(|f| f.len() as u16 + BORDERED_BOX_WIDTH + FILTER_NAME_PADDING);
+
+    let [_, checkboxes_area, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(filter_lengths.iter().sum()),
+        Constraint::Fill(1),
+    ])
+    .areas(checkboxes_area);
+
+    frame.render_widget(
+        Paragraph::new(app.search_str.clone()).block(Block::bordered().title("Search")),
+        search_area,
+    );
+
+    let checkboxes_area =
+        Layout::horizontal(Constraint::from_lengths(filter_lengths)).split(checkboxes_area);
+
+    for i in 0..5 {
+        let [box_area, title_area] = Layout::horizontal([
+            Constraint::Length(BORDERED_BOX_WIDTH),
+            Constraint::Length(filter_lengths[i] + FILTER_NAME_PADDING),
+        ])
+        .areas(checkboxes_area[i]);
+
+        let checkbox_state = if i == app.curr_filter { "X" } else { " " };
+
         frame.render_widget(
-            Paragraph::new(app.search_str.clone()).block(Block::bordered().title("Search")),
-            search_area[1],
+            Paragraph::new(checkbox_state).block(Block::bordered()),
+            box_area,
+        );
+        frame.render_widget(
+            Paragraph::new(AVAILABLE_FILTERS[i])
+                .block(Block::bordered().border_style(Style::new().black())),
+            title_area,
         );
     }
 }
+
 fn handle_events(app: &mut App) {
     match event::read().unwrap_or_else(|err| {
         panic!("Something went very wrong while waiting for keyboard input. Error: {err}")
@@ -116,8 +167,52 @@ fn handle_navigation(app: &mut App, key_code: KeyCode) {
         KeyCode::Char('/') => {
             app.app_state = AppState::Searching;
         }
+        KeyCode::Char('s') => {
+            let out_str = scan_screen("2413,1092 582x50");
+            if out_str.is_empty() {
+                app.test_string = String::from("No result");
+            } else {
+                app.table_state.select(
+                    app.displayed_weapons
+                        .iter()
+                        .position(|w| w.name.to_lowercase() == out_str.trim().to_lowercase()),
+                );
+            }
+        }
+        KeyCode::Char('c') => {
+            let out_str = scan_screen("2569,948 186x50");
+            if out_str.to_lowercase() == "equipped" {
+                let equipped_w = scan_screen("2408,1103 619x50");
+                let new_w = scan_screen("3252,1101 619x50");
+            }
+        }
         _ => (),
     }
+}
+
+fn scan_screen(cords: &str) -> String {
+    //grim -g 2413,1092 582x50 - | tesseract -l "eng" - -
+    let output = Command::new("grim")
+        .arg("-g")
+        .arg(cords)
+        .arg("-")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("Something went wrong")
+        .stdout
+        .expect("More went wrong");
+    let ocr = Command::new("tesseract")
+        .arg("-l")
+        .arg("eng")
+        .arg("-")
+        .arg("-")
+        .stdin(Stdio::from(output))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Second more went wrong");
+    let ocr_result = ocr.wait_with_output().expect("Third even more went wrong");
+    String::from_utf8(ocr_result.stdout).expect("Last wrong")
 }
 
 fn handle_search(app: &mut App, key_code: KeyCode, key_modifier: KeyModifiers) {
@@ -125,10 +220,9 @@ fn handle_search(app: &mut App, key_code: KeyCode, key_modifier: KeyModifiers) {
         KeyCode::Esc => {
             app.app_state = AppState::Navigating;
             app.displayed_weapons = app.weapon_data.clone();
+            app.curr_filter = 0;
         }
-        KeyCode::Char(c) if KeyModifiers::CONTROL == key_modifier => {
-            activate_filter(c, &mut app.weapon_data, &mut app.displayed_weapons)
-        }
+        KeyCode::Char(c) if KeyModifiers::CONTROL == key_modifier => activate_filter(c, app),
         KeyCode::Char(c) => app.search_str.push(c),
         KeyCode::Backspace => {
             app.search_str.pop();
@@ -148,49 +242,46 @@ fn handle_search(app: &mut App, key_code: KeyCode, key_modifier: KeyModifiers) {
     }
 }
 
-fn activate_filter<'a>(
-    key: char,
-    weapons: &mut Vec<Rc<Weapon<'a>>>,
-    displayed: &mut Vec<Rc<Weapon<'a>>>,
-) {
-    displayed.clear();
+fn activate_filter(key: char, app: &mut App) {
     let attribute_index: usize = match key {
-        'v' => 0,
-        'm' => 1,
-        'e' => 2,
-        's' => 3,
-        'd' => 4,
-        'i' => 5,
-        'f' => 6,
-        'a' => 7,
+        's' => 0,
+        'd' => 1,
+        'i' => 2,
+        'f' => 3,
+        'a' => 4,
         _ => return,
     };
 
-    weapons
+    app.displayed_weapons.clear();
+    if app.curr_filter == attribute_index {
+        app.displayed_weapons = app.weapon_data.clone();
+        app.curr_filter = 5;
+        return;
+    }
+    app.curr_filter = attribute_index;
+
+    app.weapon_data
         .iter()
         .filter(|w| w.scaling[attribute_index].is_some())
-        .for_each(|w| displayed.push(w.clone()));
+        .for_each(|w| app.displayed_weapons.push(w.clone()));
 
-    let scaling_closure = |i: usize, w: &Weapon| -> usize {
-        w.scaling[i].as_ref().map_or(6, |y| match y {
-            Attribute::Vigor(v)
-            | Attribute::Mind(v)
-            | Attribute::Endurance(v)
-            | Attribute::Strength(v)
-            | Attribute::Dexterity(v)
-            | Attribute::Intelligence(v)
-            | Attribute::Faith(v)
-            | Attribute::Arcane(v) => *v,
-        })
-    };
-    displayed.sort_by(|p, c| {
-        scaling_closure(attribute_index, p).cmp(&scaling_closure(attribute_index, c))
+    app.displayed_weapons.sort_by(|p, c| {
+        p.scaling[attribute_index]
+            .as_ref()
+            .unwrap_or(&AttributeScaling(6))
+            .0
+            .cmp(
+                &c.scaling[attribute_index]
+                    .as_ref()
+                    .unwrap_or(&AttributeScaling(6))
+                    .0,
+            )
     });
 }
 
 fn generate_table<'a>(weapons: &'a Vec<Rc<Weapon>>) -> Table<'a> {
-    let scale_ranks = ["S", "A", "B", "C", "D", "E", "N/A"];
-    let ailments = [
+    const SCALE_RANKS: [&str; 7] = ["S", "A", "B", "C", "D", "E", "N/A"];
+    const AILMENTS: [&str; 8] = [
         "Poison",
         "Scarlet Rot",
         "Blood loss",
@@ -200,8 +291,7 @@ fn generate_table<'a>(weapons: &'a Vec<Rc<Weapon>>) -> Table<'a> {
         "Death blight",
         "N/A",
     ];
-    let mut rows: Vec<Row> = Vec::with_capacity(weapons.len());
-    let widths = [
+    const WIDTHS: [Constraint; 11] = [
         Constraint::Max(30),
         Constraint::Max(30),
         Constraint::Max(12),
@@ -209,91 +299,62 @@ fn generate_table<'a>(weapons: &'a Vec<Rc<Weapon>>) -> Table<'a> {
         Constraint::Max(12),
         Constraint::Max(12),
         Constraint::Max(12),
-        Constraint::Max(12),
-        Constraint::Max(12),
-        Constraint::Max(12),
+        Constraint::Fill(1),
         Constraint::Fill(1),
         Constraint::Fill(1),
         Constraint::Fill(1),
     ];
 
-    let scaling_closure = |i: usize, w: &Weapon| -> usize {
-        w.scaling[i].as_ref().map_or(6, |y| match y {
-            Attribute::Vigor(v)
-            | Attribute::Mind(v)
-            | Attribute::Endurance(v)
-            | Attribute::Strength(v)
-            | Attribute::Dexterity(v)
-            | Attribute::Intelligence(v)
-            | Attribute::Faith(v)
-            | Attribute::Arcane(v) => *v,
-        })
-    };
+    const HEADERS: [&str; 11] = [
+        "Name",
+        "Attack affinity",
+        "Strength",
+        "Dexterity",
+        "Intelligence",
+        "Faith",
+        "Arcane",
+        "Attack Power",
+        "Guarded Negation",
+        "Ailment Type",
+        "Ailment value",
+    ];
 
-    let atk_grd_closure = |i: usize, w: &[ElementTypes; 6]| -> u8 {
-        match &w[i] {
-            ElementTypes::Physical(v)
-            | ElementTypes::Magic(v)
-            | ElementTypes::Fire(v)
-            | ElementTypes::Lightning(v)
-            | ElementTypes::Holy(v)
-            | ElementTypes::Boost(v) => *v,
-        }
-    };
+    let mut rows: Vec<Row> = Vec::with_capacity(weapons.len());
 
     for weapon in weapons {
         let (ailment_type, status_ailment) =
             weapon
                 .status_ailment
                 .as_ref()
-                .map_or((ailments[7], &0), |s_kind| match s_kind {
-                    StatusAilment::Poison(val) => (ailments[0], val),
-                    StatusAilment::ScarletRot(val) => (ailments[1], val),
-                    StatusAilment::BloodLoss(val) => (ailments[2], val),
-                    StatusAilment::Frostbite(val) => (ailments[3], val),
-                    StatusAilment::Sleep(val) => (ailments[4], val),
-                    StatusAilment::Madness(val) => (ailments[5], val),
-                    StatusAilment::DeathBlight(val) => (ailments[6], val),
+                .map_or((AILMENTS[7], "0"), |s_kind| match s_kind {
+                    StatusAilment::Poison(val) => (AILMENTS[0], val),
+                    StatusAilment::ScarletRot(val) => (AILMENTS[1], val),
+                    StatusAilment::BloodLoss(val) => (AILMENTS[2], val),
+                    StatusAilment::Frostbite(val) => (AILMENTS[3], val),
+                    StatusAilment::Sleep(val) => (AILMENTS[4], val),
+                    StatusAilment::Madness(val) => (AILMENTS[5], val),
+                    StatusAilment::DeathBlight(val) => (AILMENTS[6], val),
                 });
 
+        let [str_scl, dex_scl, int_scl, fai_scl, arc_scl] = &weapon.scaling;
+
         let weapon_row = Row::new([
-            weapon.name.to_owned(),
-            weapon.attack_affinity.unwrap_or("Unknown").to_owned(),
-            scale_ranks[scaling_closure(0, weapon)].to_owned(),
-            scale_ranks[scaling_closure(1, weapon)].to_owned(),
-            scale_ranks[scaling_closure(2, weapon)].to_owned(),
-            scale_ranks[scaling_closure(3, weapon)].to_owned(),
-            scale_ranks[scaling_closure(4, weapon)].to_owned(),
-            scale_ranks[scaling_closure(5, weapon)].to_owned(),
-            scale_ranks[scaling_closure(6, weapon)].to_owned(),
-            scale_ranks[scaling_closure(7, weapon)].to_owned(),
-            atk_grd_closure(0, &weapon.attack_power).to_string(),
-            atk_grd_closure(0, &weapon.guarded_negation).to_string(),
-            ailment_type.to_owned(),
-            status_ailment.to_string(),
+            weapon.name,
+            weapon.attack_affinity.unwrap_or("Unknown"),
+            SCALE_RANKS[str_scl.as_ref().unwrap_or(&AttributeScaling(6)).0],
+            SCALE_RANKS[dex_scl.as_ref().unwrap_or(&AttributeScaling(6)).0],
+            SCALE_RANKS[int_scl.as_ref().unwrap_or(&AttributeScaling(6)).0],
+            SCALE_RANKS[fai_scl.as_ref().unwrap_or(&AttributeScaling(6)).0],
+            SCALE_RANKS[arc_scl.as_ref().unwrap_or(&AttributeScaling(6)).0],
+            weapon.attack_power[0].0.as_str(),
+            weapon.guarded_negation[0].0.as_str(),
+            ailment_type,
+            status_ailment,
         ]);
         rows.push(weapon_row);
     }
-    Table::new(rows, widths)
-        .header(
-            Row::new([
-                "Name",
-                "Attack affinity",
-                "Vigor",
-                "Mind",
-                "Endurance",
-                "Strength",
-                "Dexterity",
-                "Intelligence",
-                "Faith",
-                "Arcane",
-                "Attack Power",
-                "Guarded Negation",
-                "Ailment Type",
-                "Ailment value",
-            ])
-            .style(Style::new().bold()),
-        )
+    Table::new(rows, WIDTHS)
+        .header(Row::new(HEADERS).style(Style::new().bold()))
         .row_highlight_style(Style::new().italic().fg(Color::Black).bg(Color::White))
 }
 
@@ -330,6 +391,8 @@ fn main() {
                     table_state: TableState::default().with_selected(Some(0)),
                     app_state: AppState::Navigating,
                     search_str: String::new(),
+                    curr_filter: 5,
+                    test_string: String::from("Placeholder"),
                 };
                 run(&mut app, &mut terminal);
                 ratatui::restore();

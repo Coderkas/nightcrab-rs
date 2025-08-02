@@ -2,45 +2,28 @@ use serde_json::Value;
 
 pub struct Weapon<'a> {
     pub name: &'a str,
-    pub range: Option<u8>,
     pub passive: Option<&'a str>,
-    pub kind: &'a str,
+    pub kind: Option<&'a str>,
     pub attack_affinity: Option<&'a str>,
-    pub attack_power: [ElementTypes; 6],
-    pub guarded_negation: [ElementTypes; 6],
-    pub scaling: [Option<Attribute>; 8],
+    pub attack_power: [ElementValue; 6],
+    pub guarded_negation: [ElementValue; 6],
+    pub scaling: [Option<AttributeScaling>; 5],
     pub status_ailment: Option<StatusAilment>,
     pub active: Option<&'a str>,
 }
 
-pub enum ElementTypes {
-    Physical(u8),
-    Magic(u8),
-    Fire(u8),
-    Lightning(u8),
-    Holy(u8),
-    Boost(u8),
-}
+pub struct ElementValue(pub String);
 
-pub enum Attribute {
-    Vigor(usize),
-    Mind(usize),
-    Endurance(usize),
-    Strength(usize),
-    Dexterity(usize),
-    Intelligence(usize),
-    Faith(usize),
-    Arcane(usize),
-}
+pub struct AttributeScaling(pub usize);
 
 pub enum StatusAilment {
-    Poison(u8),
-    ScarletRot(u8),
-    BloodLoss(u8),
-    Frostbite(u8),
-    Sleep(u8),
-    Madness(u8),
-    DeathBlight(u8),
+    Poison(String),
+    ScarletRot(String),
+    BloodLoss(String),
+    Frostbite(String),
+    Sleep(String),
+    Madness(String),
+    DeathBlight(String),
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -49,37 +32,11 @@ pub fn parse_weapon_data(weapon_data: &Value) -> Weapon {
         name: weapon_data["name"]
             .as_str()
             .expect("Weapon name was empty, wft?"),
-        range: if weapon_data["range"].is_null() {
-            None
-        } else {
-            Some(
-                weapon_data["range"]
-                    .as_u64()
-                    .expect("Range has a value but it wasnt a number?") as u8,
-            )
-        },
-
         passive: get_node_name(weapon_data, "weaponPassive"),
-        kind: weapon_data["weaponType"]["name"]
-            .as_str()
-            .expect("Weapon type was empty"),
+        kind: get_node_name(weapon_data, "weaponType"),
         attack_affinity: get_node_name(weapon_data, "attackAffinity"),
-        attack_power: [
-            ElementTypes::Physical(get_element_val(&weapon_data["attackPower"], 0)),
-            ElementTypes::Magic(get_element_val(&weapon_data["attackPower"], 1)),
-            ElementTypes::Fire(get_element_val(&weapon_data["attackPower"], 2)),
-            ElementTypes::Lightning(get_element_val(&weapon_data["attackPower"], 3)),
-            ElementTypes::Holy(get_element_val(&weapon_data["attackPower"], 4)),
-            ElementTypes::Boost(get_element_val(&weapon_data["attackPower"], 5)),
-        ],
-        guarded_negation: [
-            ElementTypes::Physical(get_element_val(&weapon_data["guardedNegation"], 0)),
-            ElementTypes::Magic(get_element_val(&weapon_data["guardedNegation"], 1)),
-            ElementTypes::Fire(get_element_val(&weapon_data["guardedNegation"], 2)),
-            ElementTypes::Lightning(get_element_val(&weapon_data["guardedNegation"], 3)),
-            ElementTypes::Holy(get_element_val(&weapon_data["guardedNegation"], 4)),
-            ElementTypes::Boost(get_element_val(&weapon_data["guardedNegation"], 5)),
-        ],
+        attack_power: get_element_val(&weapon_data["attackPower"]),
+        guarded_negation: get_element_val(&weapon_data["guardedNegation"]),
         scaling: parse_scalings(weapon_data),
         status_ailment: if weapon_data["statusAilment"]["value"].is_null() {
             None
@@ -100,22 +57,31 @@ fn get_node_name<'a>(json_result: &'a Value, node_name: &str) -> Option<&'a str>
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
-fn get_element_val(json_result: &Value, value_index: usize) -> u8 {
-    if json_result[value_index]["value"].is_null() {
-        0
-    } else {
-        json_result[value_index]["value"]
-            .as_u64()
-            .expect("value was empty or coulnt be parsed into u64") as u8
+fn get_element_val(json_result: &Value) -> [ElementValue; 6] {
+    let mut elements = [
+        ElementValue(String::from("0")),
+        ElementValue(String::from("0")),
+        ElementValue(String::from("0")),
+        ElementValue(String::from("0")),
+        ElementValue(String::from("0")),
+        ElementValue(String::from("0")),
+    ];
+    for i in 0..5 {
+        if !json_result[i]["value"].is_null() {
+            elements[i].0 = json_result[i]["value"]
+                .as_u64()
+                .expect("value was empty or coulnt be parsed into u64")
+                .to_string();
+        }
     }
+    elements
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn get_ailment(json_result: &Value) -> StatusAilment {
     let value = json_result["statusAilment"]["value"]
         .as_u64()
-        .expect("failed to parse ailment value") as u8;
+        .expect("failed to parse ailment value")
+        .to_string();
     match json_result["statusAilment"]["statusAilmentType"]["name"]
         .as_str()
         .expect("failed to parse ailment type")
@@ -131,14 +97,14 @@ fn get_ailment(json_result: &Value) -> StatusAilment {
     }
 }
 
-fn parse_scalings(json_result: &Value) -> [Option<Attribute>; 8] {
-    let mut scalings = [None, None, None, None, None, None, None, None];
+fn parse_scalings(json_result: &Value) -> [Option<AttributeScaling>; 5] {
+    let mut attr_arr = [None, None, None, None, None];
 
-    for scaling in json_result["attributeScaling"]
+    for scale in json_result["attributeScaling"]
         .as_array()
         .expect("failed to parse scalings as array")
     {
-        let attribute_value: usize = match scaling["value"]
+        let attribute_value: usize = match scale["value"]
             .as_str()
             .expect("failed to parse attribute value as str")
         {
@@ -152,21 +118,18 @@ fn parse_scalings(json_result: &Value) -> [Option<Attribute>; 8] {
             _ => panic!("found weird attribute value"),
         };
 
-        match scaling["attribute"]["name"]
+        match scale["attribute"]["name"]
             .as_str()
             .expect("failed to parse attribute name as string")
         {
-            "Vigor" => scalings[0] = Some(Attribute::Vigor(attribute_value)),
-            "Mind" => scalings[1] = Some(Attribute::Mind(attribute_value)),
-            "Endurance" => scalings[2] = Some(Attribute::Endurance(attribute_value)),
-            "Strength" => scalings[3] = Some(Attribute::Strength(attribute_value)),
-            "Dexterity" => scalings[4] = Some(Attribute::Dexterity(attribute_value)),
-            "Intelligence" => scalings[5] = Some(Attribute::Intelligence(attribute_value)),
-            "Faith" => scalings[6] = Some(Attribute::Faith(attribute_value)),
-            "Arcane" => scalings[7] = Some(Attribute::Arcane(attribute_value)),
+            "Strength" => attr_arr[0] = Some(AttributeScaling(attribute_value)),
+            "Dexterity" => attr_arr[1] = Some(AttributeScaling(attribute_value)),
+            "Intelligence" => attr_arr[2] = Some(AttributeScaling(attribute_value)),
+            "Faith" => attr_arr[3] = Some(AttributeScaling(attribute_value)),
+            "Arcane" => attr_arr[4] = Some(AttributeScaling(attribute_value)),
             _ => panic!("found weird attribute"),
         }
     }
 
-    scalings
+    attr_arr
 }
