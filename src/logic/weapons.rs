@@ -7,43 +7,51 @@ pub struct Weapon<'a> {
     pub attack_affinity: Option<&'a str>,
     pub attack_power: [ElementValue; 6],
     pub guarded_negation: [ElementValue; 6],
-    pub scaling: [Option<AttributeScaling>; 5],
-    pub status_ailment: Option<StatusAilment>,
+    pub scaling: [(Attribute, Option<usize>); 5],
+    pub status_ailment: Option<(StatusAilment, String)>,
     pub active: Option<&'a str>,
 }
 
-pub struct ElementValue(pub String);
+pub type ElementValue = String;
 
-pub struct AttributeScaling(pub usize);
-
-pub enum StatusAilment {
-    Poison(String),
-    ScarletRot(String),
-    BloodLoss(String),
-    Frostbite(String),
-    Sleep(String),
-    Madness(String),
-    DeathBlight(String),
+pub enum Attribute {
+    Strength,
+    Dexterity,
+    Intelligence,
+    Faith,
+    Arcane,
 }
 
-#[allow(clippy::cast_possible_truncation)]
-pub fn parse_weapon_data(weapon_data: &Value) -> Weapon {
-    Weapon {
-        name: weapon_data["name"]
-            .as_str()
-            .expect("Weapon name was empty, wft?"),
-        passive: get_node_name(weapon_data, "weaponPassive"),
-        kind: get_node_name(weapon_data, "weaponType"),
-        attack_affinity: get_node_name(weapon_data, "attackAffinity"),
-        attack_power: get_element_val(&weapon_data["attackPower"]),
-        guarded_negation: get_element_val(&weapon_data["guardedNegation"]),
-        scaling: parse_scalings(weapon_data),
-        status_ailment: if weapon_data["statusAilment"]["value"].is_null() {
-            None
-        } else {
-            Some(get_ailment(weapon_data))
-        },
-        active: get_node_name(weapon_data, "ashOfWar"),
+pub enum StatusAilment {
+    Poison,
+    ScarletRot,
+    BloodLoss,
+    Frostbite,
+    Sleep,
+    Madness,
+    DeathBlight,
+    Unknown,
+}
+
+impl<'a> Weapon<'a> {
+    pub fn new(weapon_data: &'a Value) -> Self {
+        Self {
+            name: weapon_data["name"]
+                .as_str()
+                .expect("Weapon name was empty, wft?"),
+            passive: get_node_name(weapon_data, "weaponPassive"),
+            kind: get_node_name(weapon_data, "weaponType"),
+            attack_affinity: get_node_name(weapon_data, "attackAffinity"),
+            attack_power: get_element_val(&weapon_data["attackPower"]),
+            guarded_negation: get_element_val(&weapon_data["guardedNegation"]),
+            scaling: parse_scalings(weapon_data),
+            status_ailment: if weapon_data["statusAilment"]["value"].is_null() {
+                None
+            } else {
+                Some(get_ailment(weapon_data))
+            },
+            active: get_node_name(weapon_data, "ashOfWar"),
+        }
     }
 }
 
@@ -59,16 +67,16 @@ fn get_node_name<'a>(json_result: &'a Value, node_name: &str) -> Option<&'a str>
 
 fn get_element_val(json_result: &Value) -> [ElementValue; 6] {
     let mut elements = [
-        ElementValue(String::from("0")),
-        ElementValue(String::from("0")),
-        ElementValue(String::from("0")),
-        ElementValue(String::from("0")),
-        ElementValue(String::from("0")),
-        ElementValue(String::from("0")),
+        ElementValue::from("0"),
+        ElementValue::from("0"),
+        ElementValue::from("0"),
+        ElementValue::from("0"),
+        ElementValue::from("0"),
+        ElementValue::from("0"),
     ];
     for i in 0..5 {
         if !json_result[i]["value"].is_null() {
-            elements[i].0 = json_result[i]["value"]
+            elements[i] = json_result[i]["value"]
                 .as_u64()
                 .expect("value was empty or coulnt be parsed into u64")
                 .to_string();
@@ -77,7 +85,7 @@ fn get_element_val(json_result: &Value) -> [ElementValue; 6] {
     elements
 }
 
-fn get_ailment(json_result: &Value) -> StatusAilment {
+fn get_ailment(json_result: &Value) -> (StatusAilment, String) {
     let value = json_result["statusAilment"]["value"]
         .as_u64()
         .expect("failed to parse ailment value")
@@ -86,19 +94,25 @@ fn get_ailment(json_result: &Value) -> StatusAilment {
         .as_str()
         .expect("failed to parse ailment type")
     {
-        "Poison" => StatusAilment::Poison(value),
-        "Scarlet Rot" => StatusAilment::ScarletRot(value),
-        "Blood Loss" => StatusAilment::BloodLoss(value),
-        "Frostbite" => StatusAilment::Frostbite(value),
-        "Sleep" => StatusAilment::Sleep(value),
-        "Madness" => StatusAilment::Madness(value),
-        "Death Blight" => StatusAilment::DeathBlight(value),
+        "Poison" => (StatusAilment::Poison, value),
+        "Scarlet Rot" => (StatusAilment::ScarletRot, value),
+        "Blood Loss" => (StatusAilment::BloodLoss, value),
+        "Frostbite" => (StatusAilment::Frostbite, value),
+        "Sleep" => (StatusAilment::Sleep, value),
+        "Madness" => (StatusAilment::Madness, value),
+        "Death Blight" => (StatusAilment::DeathBlight, value),
         _ => panic!("unknown status ailment was found while parsing weapon"),
     }
 }
 
-fn parse_scalings(json_result: &Value) -> [Option<AttributeScaling>; 5] {
-    let mut attr_arr = [None, None, None, None, None];
+fn parse_scalings(json_result: &Value) -> [(Attribute, Option<usize>); 5] {
+    let mut attr_arr = [
+        (Attribute::Strength, None),
+        (Attribute::Dexterity, None),
+        (Attribute::Intelligence, None),
+        (Attribute::Faith, None),
+        (Attribute::Arcane, None),
+    ];
 
     for scale in json_result["attributeScaling"]
         .as_array()
@@ -122,11 +136,11 @@ fn parse_scalings(json_result: &Value) -> [Option<AttributeScaling>; 5] {
             .as_str()
             .expect("failed to parse attribute name as string")
         {
-            "Strength" => attr_arr[0] = Some(AttributeScaling(attribute_value)),
-            "Dexterity" => attr_arr[1] = Some(AttributeScaling(attribute_value)),
-            "Intelligence" => attr_arr[2] = Some(AttributeScaling(attribute_value)),
-            "Faith" => attr_arr[3] = Some(AttributeScaling(attribute_value)),
-            "Arcane" => attr_arr[4] = Some(AttributeScaling(attribute_value)),
+            "Strength" => attr_arr[0].1 = Some(attribute_value),
+            "Dexterity" => attr_arr[1].1 = Some(attribute_value),
+            "Intelligence" => attr_arr[2].1 = Some(attribute_value),
+            "Faith" => attr_arr[3].1 = Some(attribute_value),
+            "Arcane" => attr_arr[4].1 = Some(attribute_value),
             _ => panic!("found weird attribute"),
         }
     }
