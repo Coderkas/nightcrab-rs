@@ -19,7 +19,7 @@ mod logic;
 use logic::http::send_web_request;
 use logic::weapons::Weapon;
 
-use crate::logic::weapons::{Attribute, StatusAilment};
+use crate::logic::weapons::StatusAilment;
 
 enum BaseState {
     Navigating,
@@ -46,12 +46,13 @@ impl AppStates {
 }
 
 struct App<'a> {
-    displayed_data: Vec<Rc<Weapon<'a>>>,
-    data: Vec<Rc<Weapon<'a>>>,
     state: AppStates,
     test_string: String,
+    table: TableWidget<'a>,
     filter: FilterWidget<'a>,
     popup: PopupWidget<'a>,
+    displayed_data: Vec<Rc<Weapon<'a>>>,
+    data: Vec<Rc<Weapon<'a>>>,
 }
 
 impl<'a> App<'a> {
@@ -59,12 +60,13 @@ impl<'a> App<'a> {
         let popup = PopupWidget::new(Constraint::Percentage(30), Constraint::Length(9), area);
 
         Self {
-            displayed_data: data.clone(),
-            data,
             state: AppStates::new(),
             test_string: String::from("Placeholder"),
+            table: TableWidget::new(data.clone(), area),
             filter: FilterWidget::new(popup.inner_area),
             popup,
+            displayed_data: data.clone(),
+            data: data.clone(),
         }
     }
 
@@ -74,10 +76,28 @@ impl<'a> App<'a> {
                 .draw(|frame| self.draw(frame))
                 .expect("Terminal rendering broke. Oh shit.");
             self.handle_events();
+            if matches!(self.state.base, BaseState::Searching) {
+                let area = terminal.get_frame().area();
+                let popup =
+                    PopupWidget::new(Constraint::Percentage(30), Constraint::Length(9), area);
+                self.table = TableWidget::new(self.displayed_data.clone(), area);
+                self.filter = FilterWidget::new(popup.inner_area);
+            }
         }
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        frame.render_stateful_widget(
+            &self.table.table.widget,
+            self.table.table.area,
+            &mut self.state.table,
+        );
+        frame.render_widget(&self.table.info_block.widget, self.table.info_block.area);
+        frame.render_widget(
+            &self.table.info_content.widget,
+            self.table.info_content.area,
+        );
+
         if matches!(self.state.base, BaseState::Searching) {
             frame.render_widget(Clear, self.popup.block.area);
             frame.render_widget(&self.popup.block.widget, self.popup.block.area);
@@ -182,9 +202,7 @@ impl<'a> App<'a> {
             }
             KeyCode::Char(c) if KeyModifiers::CONTROL == key_modifier => self.activate_filter(c),
             KeyCode::Char(c) => self.state.search.push(c),
-            KeyCode::Backspace => {
-                self.state.search.pop();
-            }
+            KeyCode::Backspace => _ = self.state.search.pop(),
             KeyCode::Enter => self.state.base = BaseState::Navigating,
             _ => (),
         }
@@ -230,10 +248,22 @@ impl<'a> App<'a> {
                 .cmp(&c.scaling[attribute_index].1.unwrap_or(6))
         });
     }
+}
 
-    // maybe circular reference if outsourcing to table? fuck...
-    fn generate_table(&self) -> Table {
-        const SCALE_RANKS: [&str; 7] = ["S", "A", "B", "C", "D", "E", "N/A"];
+struct UIPair<T: Widget + Default> {
+    widget: T,
+    area: Rect,
+}
+
+struct TableWidget<'a> {
+    table: UIPair<Table<'a>>,
+    info_content: UIPair<Paragraph<'a>>,
+    info_block: UIPair<Block<'a>>,
+}
+
+impl<'a> TableWidget<'a> {
+    fn new(data: Vec<Rc<Weapon<'a>>>, area: Rect) -> Self {
+        const SCALE_RANKS: [char; 7] = ['S', 'A', 'B', 'C', 'D', 'E', '-'];
         const AILMENTS: [&str; 8] = [
             "Poison",
             "Scarlet Rot",
@@ -257,7 +287,6 @@ impl<'a> App<'a> {
             Constraint::Fill(1),
             Constraint::Fill(1),
         ];
-
         const HEADERS: [&str; 11] = [
             "Name",
             "Attack affinity",
@@ -272,68 +301,49 @@ impl<'a> App<'a> {
             "Ailment value",
         ];
 
-        let mut rows: Vec<Row> = Vec::with_capacity(self.data.len());
+        let rows: Vec<Row> = data
+            .iter()
+            .map(|weapon| {
+                let weapon = weapon.as_ref();
+                let (ailment_type, status_ailment) = match weapon.status_ailment {
+                    Some((StatusAilment::Poison, s)) => (AILMENTS[0], s),
+                    Some((StatusAilment::ScarletRot, s)) => (AILMENTS[1], s),
+                    Some((StatusAilment::BloodLoss, s)) => (AILMENTS[2], s),
+                    Some((StatusAilment::Frostbite, s)) => (AILMENTS[3], s),
+                    Some((StatusAilment::Sleep, s)) => (AILMENTS[4], s),
+                    Some((StatusAilment::Madness, s)) => (AILMENTS[5], s),
+                    Some((StatusAilment::DeathBlight, s)) => (AILMENTS[6], s),
+                    Some((StatusAilment::Unknown, s)) => (AILMENTS[7], s),
+                    None => (AILMENTS[7], 0),
+                };
 
-        for weapon in &self.data {
-            let (ailment_type, status_ailment) =
-                weapon
-                    .status_ailment
-                    .as_ref()
-                    .map_or((AILMENTS[7], "0"), |s_kind| match s_kind {
-                        (StatusAilment::Poison, val) => (AILMENTS[0], val),
-                        (StatusAilment::ScarletRot, val) => (AILMENTS[1], val),
-                        (StatusAilment::BloodLoss, val) => (AILMENTS[2], val),
-                        (StatusAilment::Frostbite, val) => (AILMENTS[3], val),
-                        (StatusAilment::Sleep, val) => (AILMENTS[4], val),
-                        (StatusAilment::Madness, val) => (AILMENTS[5], val),
-                        (StatusAilment::DeathBlight, val) => (AILMENTS[6], val),
-                        (StatusAilment::Unknown, val) => (AILMENTS[7], val),
-                    });
+                let [str_scl, dex_scl, int_scl, fai_scl, arc_scl] = &weapon.scaling;
 
-            let [str_scl, dex_scl, int_scl, fai_scl, arc_scl] = &weapon.scaling;
+                Row::new([
+                    String::from(weapon.name),
+                    String::from(weapon.attack_affinity.unwrap_or("Unknown")),
+                    String::from(SCALE_RANKS[str_scl.1.unwrap_or(6)]),
+                    String::from(SCALE_RANKS[dex_scl.1.unwrap_or(6)]),
+                    String::from(SCALE_RANKS[int_scl.1.unwrap_or(6)]),
+                    String::from(SCALE_RANKS[fai_scl.1.unwrap_or(6)]),
+                    String::from(SCALE_RANKS[arc_scl.1.unwrap_or(6)]),
+                    weapon.attack_power[0].to_string(),
+                    weapon.guarded_negation[0].to_string(),
+                    String::from(ailment_type),
+                    status_ailment.to_string(),
+                ])
+            })
+            .collect();
 
-            let weapon_row = Row::new([
-                weapon.name,
-                weapon.attack_affinity.unwrap_or("Unknown"),
-                SCALE_RANKS[str_scl.1.unwrap_or(6)],
-                SCALE_RANKS[dex_scl.1.unwrap_or(6)],
-                SCALE_RANKS[int_scl.1.unwrap_or(6)],
-                SCALE_RANKS[fai_scl.1.unwrap_or(6)],
-                SCALE_RANKS[arc_scl.1.unwrap_or(6)],
-                weapon.attack_power[0].as_str(),
-                weapon.guarded_negation[0].as_str(),
-                ailment_type,
-                status_ailment,
-            ]);
-            rows.push(weapon_row);
-        }
-
-        Table::new(rows, WIDTHS)
-            .header(Row::new(HEADERS).style(Style::new().bold()))
-            .row_highlight_style(Style::new().italic().fg(Color::Black).bg(Color::White))
-    }
-}
-
-struct UIPair<T: Widget + Default> {
-    widget: T,
-    area: Rect,
-}
-
-struct TableWidget<'a> {
-    table: UIPair<Table<'a>>,
-    info_content: UIPair<Paragraph<'a>>,
-    info_block: UIPair<Block<'a>>,
-}
-
-impl<'a> TableWidget<'a> {
-    fn new(area: Rect) -> Self {
         let [table_area, info_area] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Max(50)]).areas(area);
         let info_block = Block::bordered().title("Details");
 
         Self {
             table: UIPair {
-                widget: Table::default(),
+                widget: Table::new(rows, WIDTHS)
+                    .header(Row::new(HEADERS).style(Style::new().bold()))
+                    .row_highlight_style(Style::new().italic().fg(Color::Black).bg(Color::White)),
                 area: table_area,
             },
             info_content: UIPair {

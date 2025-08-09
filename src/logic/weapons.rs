@@ -8,11 +8,11 @@ pub struct Weapon<'a> {
     pub attack_power: [ElementValue; 6],
     pub guarded_negation: [ElementValue; 6],
     pub scaling: [(Attribute, Option<usize>); 5],
-    pub status_ailment: Option<(StatusAilment, String)>,
+    pub status_ailment: Option<(StatusAilment, u8)>,
     pub active: Option<&'a str>,
 }
 
-pub type ElementValue = String;
+pub type ElementValue = u8;
 
 pub enum Attribute {
     Strength,
@@ -66,30 +66,22 @@ fn get_node_name<'a>(json_result: &'a Value, node_name: &str) -> Option<&'a str>
 }
 
 fn get_element_val(json_result: &Value) -> [ElementValue; 6] {
-    let mut elements = [
-        ElementValue::from("0"),
-        ElementValue::from("0"),
-        ElementValue::from("0"),
-        ElementValue::from("0"),
-        ElementValue::from("0"),
-        ElementValue::from("0"),
-    ];
+    let mut elements = [0, 0, 0, 0, 0, 0];
     for i in 0..5 {
         if !json_result[i]["value"].is_null() {
             elements[i] = json_result[i]["value"]
                 .as_u64()
                 .expect("value was empty or coulnt be parsed into u64")
-                .to_string();
+                as u8;
         }
     }
     elements
 }
 
-fn get_ailment(json_result: &Value) -> (StatusAilment, String) {
+fn get_ailment(json_result: &Value) -> (StatusAilment, u8) {
     let value = json_result["statusAilment"]["value"]
         .as_u64()
-        .expect("failed to parse ailment value")
-        .to_string();
+        .expect("failed to parse ailment value") as u8;
     match json_result["statusAilment"]["statusAilmentType"]["name"]
         .as_str()
         .expect("failed to parse ailment type")
