@@ -8,11 +8,11 @@ pub struct Weapon<'a> {
     pub attack_power: [ElementValue; 6],
     pub guarded_negation: [ElementValue; 6],
     pub scaling: [(Attribute, Option<usize>); 5],
-    pub status_ailment: Option<(StatusAilment, u8)>,
+    pub status_ailment: Option<(StatusAilment, u64)>,
     pub active: Option<&'a str>,
 }
 
-pub type ElementValue = u8;
+pub type ElementValue = u64;
 
 pub enum Attribute {
     Strength,
@@ -71,17 +71,16 @@ fn get_element_val(json_result: &Value) -> [ElementValue; 6] {
         if !json_result[i]["value"].is_null() {
             elements[i] = json_result[i]["value"]
                 .as_u64()
-                .expect("value was empty or coulnt be parsed into u64")
-                as u8;
+                .expect("value was empty or coulnt be parsed into u64");
         }
     }
     elements
 }
 
-fn get_ailment(json_result: &Value) -> (StatusAilment, u8) {
+fn get_ailment(json_result: &Value) -> (StatusAilment, u64) {
     let value = json_result["statusAilment"]["value"]
         .as_u64()
-        .expect("failed to parse ailment value") as u8;
+        .expect("failed to parse ailment value");
     match json_result["statusAilment"]["statusAilmentType"]["name"]
         .as_str()
         .expect("failed to parse ailment type")
@@ -93,7 +92,7 @@ fn get_ailment(json_result: &Value) -> (StatusAilment, u8) {
         "Sleep" => (StatusAilment::Sleep, value),
         "Madness" => (StatusAilment::Madness, value),
         "Death Blight" => (StatusAilment::DeathBlight, value),
-        _ => panic!("unknown status ailment was found while parsing weapon"),
+        _ => (StatusAilment::Unknown, value),
     }
 }
 

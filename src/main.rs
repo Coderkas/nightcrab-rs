@@ -3,13 +3,17 @@ use std::{
     fs::OpenOptions,
     process::{Command, Stdio},
     rc::Rc,
+    sync::mpsc::{self, Receiver},
+    thread::{self, sleep},
+    time::Duration,
 };
 
 use ratatui::{
     DefaultTerminal, Frame,
-    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Style, Stylize},
+    text::{Line, Span},
     widgets::{Block, Clear, Paragraph, Row, Table, TableState, Widget},
 };
 
@@ -24,6 +28,7 @@ use crate::logic::weapons::StatusAilment;
 enum BaseState {
     Navigating,
     Searching,
+    Scanning,
     Exiting,
 }
 
@@ -49,39 +54,61 @@ struct App<'a> {
     state: AppStates,
     test_string: String,
     table: TableWidget<'a>,
-    filter: FilterWidget<'a>,
+    search: SearchWidget<'a>,
     popup: PopupWidget<'a>,
     displayed_data: Vec<Rc<Weapon<'a>>>,
     data: Vec<Rc<Weapon<'a>>>,
 }
 
 impl<'a> App<'a> {
-    fn new(data: Vec<Rc<Weapon<'a>>>, area: Rect) -> Self {
+    fn new(data: &[Rc<Weapon<'a>>], area: Rect) -> Self {
         let popup = PopupWidget::new(Constraint::Percentage(30), Constraint::Length(9), area);
 
         Self {
             state: AppStates::new(),
             test_string: String::from("Placeholder"),
-            table: TableWidget::new(data.clone(), area),
-            filter: FilterWidget::new(popup.inner_area),
+            table: TableWidget::new(data, area),
+            search: SearchWidget::new(popup.inner_area),
             popup,
-            displayed_data: data.clone(),
-            data: data.clone(),
+            displayed_data: data.to_vec(),
+            data: data.to_vec(),
         }
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) {
-        while let BaseState::Navigating | BaseState::Searching = self.state.base {
+        while let BaseState::Navigating | BaseState::Searching | BaseState::Scanning =
+            self.state.base
+        {
             terminal
                 .draw(|frame| self.draw(frame))
                 .expect("Terminal rendering broke. Oh shit.");
-            self.handle_events();
-            if matches!(self.state.base, BaseState::Searching) {
+            if matches!(self.state.base, BaseState::Scanning) {
+                let out_str = App::scan_screen("2413,1092 582x50");
+                if out_str.is_empty() {
+                    self.test_string = String::from("No result");
+                } else {
+                    self.state.table.select(
+                        self.displayed_data
+                            .iter()
+                            .position(|w| w.name.to_lowercase() == out_str.trim().to_lowercase()),
+                    );
+                    self.table.update_info(out_str.clone());
+                }
+                if event::poll(Duration::from_secs(2)).expect("Shit went downhill") {
+                    if let Event::Key(val) =
+                        event::read().unwrap_or_else(|err| panic!("Oh fuck: {err}"))
+                    {
+                        if val.code == KeyCode::Esc {
+                            self.state.base = BaseState::Navigating;
+                        }
+                    }
+                }
+            } else {
+                self.handle_events();
+            }
+            if matches!(self.state.base, BaseState::Searching | BaseState::Scanning) {
                 let area = terminal.get_frame().area();
-                let popup =
-                    PopupWidget::new(Constraint::Percentage(30), Constraint::Length(9), area);
-                self.table = TableWidget::new(self.displayed_data.clone(), area);
-                self.filter = FilterWidget::new(popup.inner_area);
+                self.table = TableWidget::new(&self.displayed_data, area);
             }
         }
     }
@@ -101,12 +128,7 @@ impl<'a> App<'a> {
         if matches!(self.state.base, BaseState::Searching) {
             frame.render_widget(Clear, self.popup.block.area);
             frame.render_widget(&self.popup.block.widget, self.popup.block.area);
-            frame.render_widget(&self.filter.searchbar.widget, self.filter.searchbar.area);
-
-            for (checkbox, label) in self.filter.checkboxes.iter().zip(self.filter.labels.iter()) {
-                frame.render_widget(&checkbox.widget, checkbox.area);
-                frame.render_widget(&label.widget, label.area);
-            }
+            frame.render_widget(&self.search.bar.widget, self.search.bar.area);
         }
     }
 
@@ -117,8 +139,8 @@ impl<'a> App<'a> {
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                 match self.state.base {
                     BaseState::Navigating => self.handle_navigation(key_event.code),
-                    BaseState::Searching => self.handle_search(key_event.code, key_event.modifiers),
-                    BaseState::Exiting => (),
+                    BaseState::Searching => self.search(key_event.code),
+                    _ => (),
                 }
             }
             _ => (),
@@ -145,7 +167,10 @@ impl<'a> App<'a> {
             KeyCode::Char('/') => {
                 self.state.base = BaseState::Searching;
             }
-            KeyCode::Char('s') => {
+            KeyCode::Char('v') => {
+                self.state.base = BaseState::Scanning;
+            }
+            KeyCode::Char('c') => {
                 let out_str = App::scan_screen("2413,1092 582x50");
                 if out_str.is_empty() {
                     self.test_string = String::from("No result");
@@ -157,13 +182,12 @@ impl<'a> App<'a> {
                     );
                 }
             }
-            KeyCode::Char('c') => {
-                let out_str = App::scan_screen("2569,948 186x50");
-                if out_str.to_lowercase() == "equipped" {
-                    let equipped_w = App::scan_screen("2408,1103 619x50");
-                    let new_w = App::scan_screen("3252,1101 619x50");
-                }
-            }
+            KeyCode::Char('s') => self.filter(0),
+            KeyCode::Char('d') => self.filter(1),
+            KeyCode::Char('i') => self.filter(2),
+            KeyCode::Char('f') => self.filter(3),
+            KeyCode::Char('a') => self.filter(4),
+            KeyCode::Char('n') => self.filter(5),
             _ => (),
         }
     }
@@ -193,14 +217,13 @@ impl<'a> App<'a> {
         String::from_utf8(ocr_result.stdout).expect("Last wrong")
     }
 
-    fn handle_search(&mut self, key_code: KeyCode, key_modifier: KeyModifiers) {
+    fn search(&mut self, key_code: KeyCode) {
         match key_code {
             KeyCode::Esc => {
                 self.state.base = BaseState::Navigating;
                 self.displayed_data = self.data.clone();
                 self.state.filter = 0;
             }
-            KeyCode::Char(c) if KeyModifiers::CONTROL == key_modifier => self.activate_filter(c),
             KeyCode::Char(c) => self.state.search.push(c),
             KeyCode::Backspace => _ = self.state.search.pop(),
             KeyCode::Enter => self.state.base = BaseState::Navigating,
@@ -216,37 +239,30 @@ impl<'a> App<'a> {
         } else {
             self.state.search.clear();
         }
+        self.search.update(self.state.search.clone());
     }
 
-    fn activate_filter(&mut self, key: char) {
-        let attribute_index: usize = match key {
-            's' => 0,
-            'd' => 1,
-            'i' => 2,
-            'f' => 3,
-            'a' => 4,
-            _ => return,
-        };
-
+    fn filter(&mut self, attribute_index: usize) {
         self.displayed_data.clear();
-        if self.state.filter == attribute_index {
+        if self.state.filter == attribute_index || attribute_index == 5 {
             self.displayed_data = self.data.clone();
             self.state.filter = 5;
-            return;
+        } else {
+            self.state.filter = attribute_index;
+
+            self.data
+                .iter()
+                .filter(|w| w.scaling[attribute_index].1.is_some())
+                .for_each(|w| self.displayed_data.push(w.clone()));
+
+            self.displayed_data.sort_by(|p, c| {
+                p.scaling[attribute_index]
+                    .1
+                    .unwrap_or(6)
+                    .cmp(&c.scaling[attribute_index].1.unwrap_or(6))
+            });
         }
-        self.state.filter = attribute_index;
-
-        self.data
-            .iter()
-            .filter(|w| w.scaling[attribute_index].1.is_some())
-            .for_each(|w| self.displayed_data.push(w.clone()));
-
-        self.displayed_data.sort_by(|p, c| {
-            p.scaling[attribute_index]
-                .1
-                .unwrap_or(6)
-                .cmp(&c.scaling[attribute_index].1.unwrap_or(6))
-        });
+        self.table.update(&self.displayed_data, self.state.filter);
     }
 }
 
@@ -262,9 +278,32 @@ struct TableWidget<'a> {
 }
 
 impl<'a> TableWidget<'a> {
-    fn new(data: Vec<Rc<Weapon<'a>>>, area: Rect) -> Self {
+    fn new(data: &[Rc<Weapon<'a>>], area: Rect) -> Self {
+        let [table_area, info_area] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Max(50)]).areas(area);
+        let info_block = Block::bordered().title("Details");
+
+        Self {
+            table: UIPair {
+                widget: TableWidget::create_table(data, 5),
+                area: table_area,
+            },
+            info_content: UIPair {
+                widget: Paragraph::new("Placeholder")
+                    .block(Block::default())
+                    .centered(),
+                area: info_block.inner(info_area),
+            },
+            info_block: UIPair {
+                widget: info_block,
+                area: info_area,
+            },
+        }
+    }
+
+    fn create_table(data: &[Rc<Weapon<'a>>], filtered_column: usize) -> Table<'a> {
         const SCALE_RANKS: [char; 7] = ['S', 'A', 'B', 'C', 'D', 'E', '-'];
-        const AILMENTS: [&str; 8] = [
+        const AILMENTS: [&str; 9] = [
             "Poison",
             "Scarlet Rot",
             "Blood loss",
@@ -272,33 +311,76 @@ impl<'a> TableWidget<'a> {
             "Sleep",
             "Madness",
             "Death blight",
-            "N/A",
+            "???",
+            "-",
         ];
         const WIDTHS: [Constraint; 11] = [
             Constraint::Max(30),
             Constraint::Max(30),
-            Constraint::Max(12),
-            Constraint::Max(12),
-            Constraint::Max(12),
-            Constraint::Max(12),
-            Constraint::Max(12),
+            Constraint::Max(8),
+            Constraint::Max(8),
+            Constraint::Max(8),
+            Constraint::Max(8),
+            Constraint::Max(8),
             Constraint::Fill(1),
             Constraint::Fill(1),
             Constraint::Fill(1),
             Constraint::Fill(1),
         ];
-        const HEADERS: [&str; 11] = [
-            "Name",
-            "Attack affinity",
-            "Strength",
-            "Dexterity",
-            "Intelligence",
-            "Faith",
-            "Arcane",
-            "Attack Power",
-            "Guarded Negation",
-            "Ailment Type",
-            "Ailment value",
+        let headers: [Line; 11] = [
+            Line::from(vec![
+                Span::from("Name ").fg(if filtered_column == 5 {
+                    Color::Yellow
+                } else {
+                    Color::White
+                }),
+                Span::from("<N>").fg(Color::Blue),
+            ]),
+            Line::from("Attack affinity"),
+            Line::from(vec![
+                Span::from("Str ").fg(if filtered_column == 0 {
+                    Color::Yellow
+                } else {
+                    Color::White
+                }),
+                Span::from("<S>").fg(Color::Blue),
+            ]),
+            Line::from(vec![
+                Span::from("Dex ").fg(if filtered_column == 1 {
+                    Color::Yellow
+                } else {
+                    Color::White
+                }),
+                Span::from("<D>").fg(Color::Blue),
+            ]),
+            Line::from(vec![
+                Span::from("Int ").fg(if filtered_column == 2 {
+                    Color::Yellow
+                } else {
+                    Color::White
+                }),
+                Span::from("<I>").fg(Color::Blue),
+            ]),
+            Line::from(vec![
+                Span::from("Fai ").fg(if filtered_column == 3 {
+                    Color::Yellow
+                } else {
+                    Color::White
+                }),
+                Span::from("<F>").fg(Color::Blue),
+            ]),
+            Line::from(vec![
+                Span::from("Arc ").fg(if filtered_column == 4 {
+                    Color::Yellow
+                } else {
+                    Color::White
+                }),
+                Span::from("<A>").fg(Color::Blue),
+            ]),
+            Line::from("Attack Power"),
+            Line::from("Guarded Negation"),
+            Line::from("Ailment Type"),
+            Line::from("Ailment value"),
         ];
 
         let rows: Vec<Row> = data
@@ -314,7 +396,7 @@ impl<'a> TableWidget<'a> {
                     Some((StatusAilment::Madness, s)) => (AILMENTS[5], s),
                     Some((StatusAilment::DeathBlight, s)) => (AILMENTS[6], s),
                     Some((StatusAilment::Unknown, s)) => (AILMENTS[7], s),
-                    None => (AILMENTS[7], 0),
+                    None => (AILMENTS[8], 0),
                 };
 
                 let [str_scl, dex_scl, int_scl, fai_scl, arc_scl] = &weapon.scaling;
@@ -334,29 +416,17 @@ impl<'a> TableWidget<'a> {
                 ])
             })
             .collect();
+        Table::new(rows, WIDTHS)
+            .header(Row::new(headers).style(Style::new().bold()))
+            .row_highlight_style(Style::new().italic().fg(Color::Black).bg(Color::White))
+    }
 
-        let [table_area, info_area] =
-            Layout::horizontal([Constraint::Fill(1), Constraint::Max(50)]).areas(area);
-        let info_block = Block::bordered().title("Details");
+    fn update(&mut self, data: &[Rc<Weapon<'a>>], filtered_column: usize) {
+        self.table.widget = TableWidget::create_table(data, filtered_column);
+    }
 
-        Self {
-            table: UIPair {
-                widget: Table::new(rows, WIDTHS)
-                    .header(Row::new(HEADERS).style(Style::new().bold()))
-                    .row_highlight_style(Style::new().italic().fg(Color::Black).bg(Color::White)),
-                area: table_area,
-            },
-            info_content: UIPair {
-                widget: Paragraph::new("Placeholder")
-                    .block(Block::default())
-                    .centered(),
-                area: info_block.inner(info_area),
-            },
-            info_block: UIPair {
-                widget: info_block,
-                area: info_area,
-            },
-        }
+    fn update_info(&mut self, test: String) {
+        self.info_content.widget = Paragraph::new(test).block(Block::default()).centered();
     }
 }
 
@@ -365,7 +435,7 @@ struct PopupWidget<'a> {
     inner_area: Rect,
 }
 
-impl<'a> PopupWidget<'a> {
+impl PopupWidget<'_> {
     fn new(width: Constraint, height: Constraint, area: Rect) -> Self {
         let [widget_area] = Layout::horizontal([width]).flex(Flex::Center).areas(area);
         let [widget_area] = Layout::vertical([height])
@@ -392,64 +462,22 @@ impl<T: Widget + Default> Default for UIPair<T> {
     }
 }
 
-struct FilterWidget<'a> {
-    searchbar: UIPair<Paragraph<'a>>,
-    checkboxes: [UIPair<Paragraph<'a>>; 5],
-    labels: [UIPair<Paragraph<'a>>; 5],
+struct SearchWidget<'a> {
+    bar: UIPair<Paragraph<'a>>,
 }
 
-impl<'a> FilterWidget<'a> {
+impl SearchWidget<'_> {
     fn new(popup_area: Rect) -> Self {
-        const LABELS: [&str; 5] = ["Strength", "Dexterity", "Intelligence", "Faith", "Arcane"];
-        const BOX_WIDTH: u16 = 3;
-        const LABEL_PADDING: u16 = 3;
-        let label_lengths = LABELS.map(|f| f.len() as u16 + BOX_WIDTH + LABEL_PADDING);
-
-        let [area_searchbar, _, area_labeled_boxes] = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Length(3),
-        ])
-        .areas(popup_area);
-
-        let [_, area_labeled_boxes, _] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(label_lengths.iter().sum()),
-            Constraint::Fill(1),
-        ])
-        .areas(area_labeled_boxes);
-
-        let area_labeled_boxes =
-            Layout::horizontal(Constraint::from_lengths(label_lengths)).split(area_labeled_boxes);
-
-        let mut labels: [UIPair<Paragraph>; 5] =
-            core::array::from_fn(|_| UIPair::<Paragraph>::default());
-
-        let mut checkboxes: [UIPair<Paragraph>; 5] =
-            core::array::from_fn(|_| UIPair::<Paragraph>::default());
-
-        for i in 0..5 {
-            let [area_checkbox, area_label] = Layout::horizontal([
-                Constraint::Length(BOX_WIDTH),
-                Constraint::Length(label_lengths[i] + LABEL_PADDING),
-            ])
-            .areas(area_labeled_boxes[i]);
-
-            checkboxes[i].widget = Paragraph::new(" ").block(Block::bordered());
-            checkboxes[i].area = area_checkbox;
-            labels[i].widget = Paragraph::new(LABELS[i])
-                .block(Block::bordered().border_style(Style::new().black()));
-            labels[i].area = area_label;
-        }
-
         Self {
-            searchbar: UIPair {
+            bar: UIPair {
                 widget: Paragraph::new("").block(Block::bordered().title("Search")),
-                area: area_searchbar,
+                area: popup_area,
             },
-            labels,
-            checkboxes,
         }
+    }
+
+    fn update(&mut self, content: String) {
+        self.bar.widget = Paragraph::new(content).block(Block::bordered().title("Search"));
     }
 }
 
@@ -478,7 +506,7 @@ fn main() {
                 {
                     weapon_data.push(Rc::new(Weapon::new(&weapon["data"]["staticDataEntity"])));
                 }
-                let mut app = App::new(weapon_data, terminal.get_frame().area());
+                let mut app = App::new(&weapon_data, terminal.get_frame().area());
                 app.run(&mut terminal);
                 ratatui::restore();
             }
