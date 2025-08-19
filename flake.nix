@@ -15,11 +15,16 @@
           pkgs.clippy
           pkgs.rust-analyzer
           pkgs.rustfmt
+          pkgs.fish
         ];
 
         env = {
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
         };
+
+        shellHook = ''
+          exec fish
+        '';
       };
     };
 }

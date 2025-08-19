@@ -3,8 +3,6 @@ use std::{
     fs::OpenOptions,
     process::{Command, Stdio},
     rc::Rc,
-    sync::mpsc::{self, Receiver},
-    thread::{self, sleep},
     time::Duration,
 };
 
@@ -52,7 +50,6 @@ impl AppStates {
 
 struct App<'a> {
     state: AppStates,
-    test_string: String,
     table: TableWidget<'a>,
     search: SearchWidget<'a>,
     popup: PopupWidget<'a>,
@@ -66,7 +63,6 @@ impl<'a> App<'a> {
 
         Self {
             state: AppStates::new(),
-            test_string: String::from("Placeholder"),
             table: TableWidget::new(data, area),
             search: SearchWidget::new(popup.inner_area),
             popup,
@@ -83,20 +79,14 @@ impl<'a> App<'a> {
                 .draw(|frame| self.draw(frame))
                 .expect("Terminal rendering broke. Oh shit.");
             if matches!(self.state.base, BaseState::Scanning) {
-                let out_str = App::scan_screen("2413,1092 582x50");
-                if out_str.is_empty() {
-                    self.test_string = String::from("No result");
-                } else {
-                    self.state.table.select(
-                        self.displayed_data
-                            .iter()
-                            .position(|w| w.name.to_lowercase() == out_str.trim().to_lowercase()),
-                    );
-                    self.table.update_info(out_str.clone());
-                }
-                if event::poll(Duration::from_secs(2)).expect("Shit went downhill") {
+                self.scan();
+                if event::poll(Duration::from_secs(2)).unwrap_or_else(|err| {
+                    panic!(
+                        "Something went very wrong while waiting for keyboard input. Error: {err}"
+                    )
+                }) {
                     if let Event::Key(val) =
-                        event::read().unwrap_or_else(|err| panic!("Oh fuck: {err}"))
+                        event::read().unwrap_or_else(|err| panic!("Something went very wrong while waiting for keyboard input. Error: {err}"))
                     {
                         if val.code == KeyCode::Esc {
                             self.state.base = BaseState::Navigating;
@@ -106,7 +96,7 @@ impl<'a> App<'a> {
             } else {
                 self.handle_events();
             }
-            if matches!(self.state.base, BaseState::Searching | BaseState::Scanning) {
+            if matches!(self.state.base, BaseState::Searching) {
                 let area = terminal.get_frame().area();
                 self.table = TableWidget::new(&self.displayed_data, area);
             }
@@ -120,10 +110,9 @@ impl<'a> App<'a> {
             &mut self.state.table,
         );
         frame.render_widget(&self.table.info_block.widget, self.table.info_block.area);
-        frame.render_widget(
-            &self.table.info_content.widget,
-            self.table.info_content.area,
-        );
+        frame.render_widget(&self.table.upper.widget, self.table.upper.area);
+        frame.render_widget(&self.table.lower.widget, self.table.lower.area);
+        frame.render_widget(&self.table.diagnostic.widget, self.table.diagnostic.area);
 
         if matches!(self.state.base, BaseState::Searching) {
             frame.render_widget(Clear, self.popup.block.area);
@@ -170,18 +159,6 @@ impl<'a> App<'a> {
             KeyCode::Char('v') => {
                 self.state.base = BaseState::Scanning;
             }
-            KeyCode::Char('c') => {
-                let out_str = App::scan_screen("2413,1092 582x50");
-                if out_str.is_empty() {
-                    self.test_string = String::from("No result");
-                } else {
-                    self.state.table.select(
-                        self.displayed_data
-                            .iter()
-                            .position(|w| w.name.to_lowercase() == out_str.trim().to_lowercase()),
-                    );
-                }
-            }
             KeyCode::Char('s') => self.filter(0),
             KeyCode::Char('d') => self.filter(1),
             KeyCode::Char('i') => self.filter(2),
@@ -192,29 +169,66 @@ impl<'a> App<'a> {
         }
     }
 
-    fn scan_screen(cords: &str) -> String {
-        //grim -g 2413,1092 582x50 - | tesseract -l "eng" - -
-        let output = Command::new("grim")
+    fn scan(&mut self) {
+        match App::scan_screen("2569,948 186x50") {
+            Ok(v) => {
+                match App::scan_screen("2408,1103 620x50") {
+                    Ok(scan_str) => self.table.update_upper(scan_str),
+                    Err(err_str) => self.table.update_diagnostic(err_str),
+                }
+                if v.to_lowercase().contains("equipped") {
+                    match App::scan_screen("3252,1101 620x50") {
+                        Ok(scan_str) => self.table.update_lower(scan_str),
+                        Err(err_str) => self.table.update_diagnostic(err_str),
+                    }
+                }
+            }
+            Err(err_str) => self.table.update_diagnostic(err_str),
+        }
+    }
+
+    fn scan_screen(cords: &str) -> Result<String, String> {
+        let Ok(grim) = Command::new("grim")
             .arg("-g")
             .arg(cords)
             .arg("-")
             .stdout(Stdio::piped())
             .spawn()
-            .expect("Something went wrong")
-            .stdout
-            .expect("More went wrong");
-        let ocr = Command::new("tesseract")
+        else {
+            return Err(String::from("Failed to start grim"));
+        };
+
+        let Some(grim_out) = grim.stdout else {
+            return Err(String::from("Failed to pipe data from grim"));
+        };
+
+        let Ok(tesser) = Command::new("tesseract")
             .arg("-l")
             .arg("eng")
             .arg("-")
             .arg("-")
-            .stdin(Stdio::from(output))
+            .stdin(Stdio::from(grim_out))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("Second more went wrong");
-        let ocr_result = ocr.wait_with_output().expect("Third even more went wrong");
-        String::from_utf8(ocr_result.stdout).expect("Last wrong")
+        else {
+            return Err(String::from("Failed to start tessearct"));
+        };
+
+        let Ok(tesser_out) = tesser.wait_with_output() else {
+            return Err(String::from("Failed to pipe data from tesseract"));
+        };
+
+        String::from_utf8(tesser_out.stdout).map_or_else(
+            |_| Err(String::from("Failed to convert tesseract output to String")),
+            |v| {
+                if v.is_empty() {
+                    Err(String::from("Scanned nothing"))
+                } else {
+                    Ok(v)
+                }
+            },
+        )
     }
 
     fn search(&mut self, key_code: KeyCode) {
@@ -273,7 +287,9 @@ struct UIPair<T: Widget + Default> {
 
 struct TableWidget<'a> {
     table: UIPair<Table<'a>>,
-    info_content: UIPair<Paragraph<'a>>,
+    upper: UIPair<Paragraph<'a>>,
+    lower: UIPair<Paragraph<'a>>,
+    diagnostic: UIPair<Paragraph<'a>>,
     info_block: UIPair<Block<'a>>,
 }
 
@@ -282,17 +298,29 @@ impl<'a> TableWidget<'a> {
         let [table_area, info_area] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Max(50)]).areas(area);
         let info_block = Block::bordered().title("Details");
+        let [upper_area, lower_area, diagnostic_area] = Layout::vertical([
+            Constraint::Percentage(40),
+            Constraint::Percentage(40),
+            Constraint::Percentage(20),
+        ])
+        .areas(info_block.inner(info_area));
 
         Self {
             table: UIPair {
                 widget: TableWidget::create_table(data, 5),
                 area: table_area,
             },
-            info_content: UIPair {
-                widget: Paragraph::new("Placeholder")
-                    .block(Block::default())
-                    .centered(),
-                area: info_block.inner(info_area),
+            upper: UIPair {
+                widget: Paragraph::new("").block(Block::default()).centered(),
+                area: upper_area,
+            },
+            lower: UIPair {
+                widget: Paragraph::new("").block(Block::default()).centered(),
+                area: lower_area,
+            },
+            diagnostic: UIPair {
+                widget: Paragraph::new("").block(Block::default()).centered(),
+                area: diagnostic_area,
             },
             info_block: UIPair {
                 widget: info_block,
@@ -425,8 +453,16 @@ impl<'a> TableWidget<'a> {
         self.table.widget = TableWidget::create_table(data, filtered_column);
     }
 
-    fn update_info(&mut self, test: String) {
-        self.info_content.widget = Paragraph::new(test).block(Block::default()).centered();
+    fn update_upper(&mut self, content: String) {
+        self.upper.widget = Paragraph::new(content).block(Block::default()).centered();
+    }
+
+    fn update_lower(&mut self, content: String) {
+        self.lower.widget = Paragraph::new(content).block(Block::default()).centered();
+    }
+
+    fn update_diagnostic(&mut self, content: String) {
+        self.diagnostic.widget = Paragraph::new(content).block(Block::default()).centered();
     }
 }
 
