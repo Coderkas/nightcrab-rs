@@ -8,11 +8,12 @@ use std::{
 
 use ratatui::{
     DefaultTerminal, Frame,
+    buffer::Buffer,
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Clear, Paragraph, Row, Table, TableState, Widget},
+    widgets::{Block, Clear, Paragraph, Row, Table, TableState, Widget, WidgetRef},
 };
 
 use serde_json::Value;
@@ -21,7 +22,7 @@ mod logic;
 use logic::http::send_web_request;
 use logic::weapons::Weapon;
 
-use crate::logic::weapons::StatusAilment;
+use crate::logic::weapons::{Attribute, StatusAilment};
 
 enum BaseState {
     Navigating,
@@ -170,24 +171,18 @@ impl<'a> App<'a> {
     }
 
     fn scan(&mut self) {
-        match App::scan_screen("2569,948 186x50") {
-            Ok(v) => {
-                match App::scan_screen("2408,1103 620x50") {
-                    Ok(scan_str) => self.table.update_upper(scan_str),
-                    Err(err_str) => self.table.update_diagnostic(err_str),
-                }
-                if v.to_lowercase().contains("equipped") {
-                    match App::scan_screen("3252,1101 620x50") {
-                        Ok(scan_str) => self.table.update_lower(scan_str),
-                        Err(err_str) => self.table.update_diagnostic(err_str),
-                    }
-                }
-            }
+        match App::scan_screen("2408,1103 620x50", &self.data) {
+            Ok(matched_weapon) => self.table.update_upper(&matched_weapon),
+            Err(err_str) => self.table.update_diagnostic(err_str),
+        }
+
+        match App::scan_screen("3252,1101 620x50", &self.data) {
+            Ok(matched_weapon) => self.table.update_lower(&matched_weapon),
             Err(err_str) => self.table.update_diagnostic(err_str),
         }
     }
 
-    fn scan_screen(cords: &str) -> Result<String, String> {
+    fn scan_screen(cords: &str, weapons: &[Rc<Weapon<'a>>]) -> Result<Rc<Weapon<'a>>, String> {
         let Ok(grim) = Command::new("grim")
             .arg("-g")
             .arg(cords)
@@ -219,16 +214,19 @@ impl<'a> App<'a> {
             return Err(String::from("Failed to pipe data from tesseract"));
         };
 
-        String::from_utf8(tesser_out.stdout).map_or_else(
-            |_| Err(String::from("Failed to convert tesseract output to String")),
-            |v| {
-                if v.is_empty() {
-                    Err(String::from("Scanned nothing"))
-                } else {
-                    Ok(v)
-                }
-            },
-        )
+        let scan_str = match String::from_utf8(tesser_out.stdout) {
+            Err(_) => return Err(String::from("Failed to convert tesseract output to String")),
+            Ok(res) if res.is_empty() => return Err(String::from("Scanned nothing")),
+            Ok(res) => res,
+        };
+
+        weapons
+            .iter()
+            .find(|w| w.name.to_lowercase().contains(&scan_str.to_lowercase()))
+            .map_or_else(
+                || Err(String::from("Could not find matching item")),
+                |matched_weapon| Ok(Rc::clone(matched_weapon)),
+            )
     }
 
     fn search(&mut self, key_code: KeyCode) {
@@ -287,8 +285,8 @@ struct UIPair<T: Widget + Default> {
 
 struct TableWidget<'a> {
     table: UIPair<Table<'a>>,
-    upper: UIPair<Paragraph<'a>>,
-    lower: UIPair<Paragraph<'a>>,
+    upper: UIPair<WeaponDetailsWidget>,
+    lower: UIPair<WeaponDetailsWidget>,
     diagnostic: UIPair<Paragraph<'a>>,
     info_block: UIPair<Block<'a>>,
 }
@@ -311,11 +309,11 @@ impl<'a> TableWidget<'a> {
                 area: table_area,
             },
             upper: UIPair {
-                widget: Paragraph::new("").block(Block::default()).centered(),
+                widget: WeaponDetailsWidget::new(&data[0]),
                 area: upper_area,
             },
             lower: UIPair {
-                widget: Paragraph::new("").block(Block::default()).centered(),
+                widget: WeaponDetailsWidget::new(&data[0]),
                 area: lower_area,
             },
             diagnostic: UIPair {
@@ -453,16 +451,212 @@ impl<'a> TableWidget<'a> {
         self.table.widget = TableWidget::create_table(data, filtered_column);
     }
 
-    fn update_upper(&mut self, content: String) {
-        self.upper.widget = Paragraph::new(content).block(Block::default()).centered();
+    fn update_upper(&mut self, content: &Weapon) {
+        self.upper.widget = WeaponDetailsWidget::new(content);
     }
 
-    fn update_lower(&mut self, content: String) {
-        self.lower.widget = Paragraph::new(content).block(Block::default()).centered();
+    fn update_lower(&mut self, content: &Weapon) {
+        self.lower.widget = WeaponDetailsWidget::new(content);
     }
 
     fn update_diagnostic(&mut self, content: String) {
         self.diagnostic.widget = Paragraph::new(content).block(Block::default()).centered();
+    }
+}
+
+#[derive(Default)]
+struct WeaponDetailsWidget {
+    name: String,
+    kind: String,
+    damage: Vec<String>,
+    ailment: String,
+    affinity: String,
+    scalings: Vec<String>,
+}
+
+impl WeaponDetailsWidget {
+    // TODO: find way to make one vec of a tuple of strings
+    // init array with len 4, map tuple from other 2 iters on each element
+    // if more complex then before, just keep using magic numbers
+    //
+    // Also missing scaling index to scaling Char convert
+    fn new(weapon: &Weapon) -> Self {
+        let damage_types = ["Phy", "Mag", "Fire", "Light", "Holy", "Crit"];
+        let arr = [
+            (String::new(), String::new()),
+            (String::new(), String::new()),
+            (String::new(), String::new()),
+            (String::new(), String::new()),
+        ];
+        let damage_arr: Vec<String> = weapon
+            .attack_power
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| {
+                if *v != 0 {
+                    Some(format!("{}: {}", damage_types[i], v))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let scalings_arr: Vec<String> = weapon
+            .scaling
+            .iter()
+            .filter_map(|(t, o)| {
+                o.as_ref().map(|v| {
+                    format!(
+                        "{}: {}",
+                        match t {
+                            Attribute::Strength => "Str",
+                            Attribute::Dexterity => "Dex",
+                            Attribute::Intelligence => "Int",
+                            Attribute::Faith => "Fai",
+                            Attribute::Arcane => "Arc",
+                        },
+                        v
+                    )
+                })
+            })
+            .collect();
+        let new_arr = arr.iter().enumerate().map(|(i, (l, r))| {
+            (
+                damage_arr.get(i).unwrap_or(l),
+                scalings_arr.get(i).unwrap_or(r),
+            )
+        });
+        Self {
+            name: weapon.name.to_string(),
+            kind: weapon.kind.unwrap_or("Unknown").to_string(),
+            damage: weapon
+                .attack_power
+                .iter()
+                .enumerate()
+                .filter_map(|(i, v)| {
+                    if *v != 0 {
+                        Some(format!("{}: {}", damage_types[i], v))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            ailment: match &weapon.status_ailment {
+                Some((t, v)) => format!(
+                    "{}: {}",
+                    match t {
+                        StatusAilment::Poison => "Poison",
+                        StatusAilment::ScarletRot => "Scarlet Rot",
+                        StatusAilment::BloodLoss => "Blood Loss",
+                        StatusAilment::Frostbite => "Frostbite",
+                        StatusAilment::Sleep => "Sleep",
+                        StatusAilment::Madness => "Madness",
+                        StatusAilment::DeathBlight => "Death Blight",
+                        StatusAilment::Unknown => "",
+                    },
+                    v
+                ),
+                None => String::new(),
+            },
+            affinity: weapon
+                .attack_affinity
+                .map_or_else(String::new, ToOwned::to_owned),
+            scalings: weapon
+                .scaling
+                .iter()
+                .filter_map(|(t, o)| {
+                    o.as_ref().map(|v| {
+                        format!(
+                            "{}: {}",
+                            match t {
+                                Attribute::Strength => "Str",
+                                Attribute::Dexterity => "Dex",
+                                Attribute::Intelligence => "Int",
+                                Attribute::Faith => "Fai",
+                                Attribute::Arcane => "Arc",
+                            },
+                            v
+                        )
+                    })
+                })
+                .collect(),
+        }
+    }
+}
+
+impl WidgetRef for WeaponDetailsWidget {
+    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+        let center_offset = area
+            .width
+            .saturating_sub(self.name.len().try_into().unwrap_or(area.width))
+            / 2;
+
+        if center_offset == 0 {
+            buf.set_stringn(
+                area.x,
+                area.y,
+                &self.name,
+                area.width.into(),
+                Style::default(),
+            );
+        } else {
+            buf.set_string(area.x + center_offset, area.y, &self.name, Style::default());
+        }
+
+        let [_, left_column, _, right_column, _] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Fill(10),
+            Constraint::Length(1),
+            Constraint::Fill(10),
+            Constraint::Fill(1),
+        ])
+        .areas(area);
+
+        buf.set_stringn(
+            left_column.x,
+            left_column.y + 2,
+            &self.kind,
+            left_column.width.into(),
+            Style::default(),
+        );
+        buf.set_stringn(
+            right_column.x,
+            right_column.y + 2,
+            &self.affinity,
+            right_column.width.into(),
+            Style::default(),
+        );
+
+        for i in 0..2 {
+            let offset = i + 3;
+            buf.set_stringn(
+                left_column.x,
+                left_column.y + offset,
+                &self.damage[usize::from(i)],
+                left_column.width.into(),
+                Style::default(),
+            );
+            buf.set_stringn(
+                right_column.x,
+                right_column.y + offset,
+                &self.scalings[usize::from(i)],
+                right_column.width.into(),
+                Style::default(),
+            );
+        }
+
+        buf.set_stringn(
+            left_column.x,
+            left_column.y + 6,
+            &self.ailment,
+            left_column.width.into(),
+            Style::default(),
+        );
+    }
+}
+
+impl Widget for WeaponDetailsWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_ref(area, buf);
     }
 }
 
