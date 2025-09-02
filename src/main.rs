@@ -1,5 +1,5 @@
 use std::{
-    env,
+    array, env,
     fs::OpenOptions,
     io::Error,
     process::{Command, Stdio},
@@ -65,7 +65,7 @@ impl<'a> App<'a> {
 
         Self {
             state: AppStates::new(),
-            table: TableWidget::new(data, area, BaseState::Navigating),
+            table: TableWidget::new(data, area, &BaseState::Navigating),
             search: SearchWidget::new(popup.inner_area),
             popup,
             displayed_data: data.to_vec(),
@@ -292,7 +292,7 @@ struct TableWidget<'a> {
 }
 
 impl<'a> TableWidget<'a> {
-    fn new(data: &[Rc<Weapon<'a>>], area: Rect, app_state: BaseState) -> Self {
+    fn new(data: &[Rc<Weapon<'a>>], area: Rect, app_state: &BaseState) -> Self {
         let [table_area, info_area] =
             Layout::horizontal([Constraint::Fill(1), Constraint::Max(50)]).areas(area);
         let info_block = Block::bordered().title(Line::from(vec![
@@ -335,100 +335,72 @@ impl<'a> TableWidget<'a> {
 
     fn create_table(data: &[Rc<Weapon<'a>>], filtered_column: usize) -> Table<'a> {
         const SCALE_RANKS: [char; 7] = ['S', 'A', 'B', 'C', 'D', 'E', '-'];
-        const AILMENTS: [&str; 9] = [
-            "Poison",
-            "Scarlet Rot",
-            "Blood loss",
-            "Frostbite",
-            "Sleep",
-            "Madness",
-            "Death blight",
-            "???",
-            "-",
-        ];
-        const WIDTHS: [Constraint; 11] = [
+        const WIDTHS: [Constraint; 10] = [
             Constraint::Max(30),
-            Constraint::Max(30),
+            Constraint::Max(20),
             Constraint::Max(8),
             Constraint::Max(8),
             Constraint::Max(8),
             Constraint::Max(8),
             Constraint::Max(8),
-            Constraint::Fill(1),
-            Constraint::Fill(1),
-            Constraint::Fill(1),
-            Constraint::Fill(1),
+            Constraint::Max(28),
+            Constraint::Max(28),
+            Constraint::Max(20),
         ];
-        let headers: [Line; 11] = [
+
+        let filter_color: [Color; 6] = array::from_fn(|i| {
+            if i == filtered_column {
+                Color::Yellow
+            } else {
+                Color::White
+            }
+        });
+
+        let headers: [Line; 10] = [
             Line::from(vec![
-                Span::from("Name ").fg(if filtered_column == 5 {
-                    Color::Yellow
-                } else {
-                    Color::White
-                }),
+                Span::from("Name ").fg(filter_color[5]),
                 Span::from("<N>").fg(Color::Blue),
             ]),
             Line::from("Attack affinity"),
             Line::from(vec![
-                Span::from("Str ").fg(if filtered_column == 0 {
-                    Color::Yellow
-                } else {
-                    Color::White
-                }),
+                Span::from("Str ").fg(filter_color[0]),
                 Span::from("<S>").fg(Color::Blue),
             ]),
             Line::from(vec![
-                Span::from("Dex ").fg(if filtered_column == 1 {
-                    Color::Yellow
-                } else {
-                    Color::White
-                }),
+                Span::from("Dex ").fg(filter_color[1]),
                 Span::from("<D>").fg(Color::Blue),
             ]),
             Line::from(vec![
-                Span::from("Int ").fg(if filtered_column == 2 {
-                    Color::Yellow
-                } else {
-                    Color::White
-                }),
+                Span::from("Int ").fg(filter_color[2]),
                 Span::from("<I>").fg(Color::Blue),
             ]),
             Line::from(vec![
-                Span::from("Fai ").fg(if filtered_column == 3 {
-                    Color::Yellow
-                } else {
-                    Color::White
-                }),
+                Span::from("Fai ").fg(filter_color[3]),
                 Span::from("<F>").fg(Color::Blue),
             ]),
             Line::from(vec![
-                Span::from("Arc ").fg(if filtered_column == 4 {
-                    Color::Yellow
-                } else {
-                    Color::White
-                }),
+                Span::from("Arc ").fg(filter_color[4]),
                 Span::from("<A>").fg(Color::Blue),
             ]),
             Line::from("Attack Power"),
             Line::from("Guarded Negation"),
-            Line::from("Ailment Type"),
-            Line::from("Ailment value"),
+            Line::from("Status Ailment"),
         ];
 
         let rows: Vec<Row> = data
             .iter()
             .map(|weapon| {
                 let weapon = weapon.as_ref();
-                let (ailment_type, status_ailment) = match weapon.status_ailment {
-                    Some((StatusAilment::Poison, s)) => (AILMENTS[0], s),
-                    Some((StatusAilment::ScarletRot, s)) => (AILMENTS[1], s),
-                    Some((StatusAilment::BloodLoss, s)) => (AILMENTS[2], s),
-                    Some((StatusAilment::Frostbite, s)) => (AILMENTS[3], s),
-                    Some((StatusAilment::Sleep, s)) => (AILMENTS[4], s),
-                    Some((StatusAilment::Madness, s)) => (AILMENTS[5], s),
-                    Some((StatusAilment::DeathBlight, s)) => (AILMENTS[6], s),
-                    Some((StatusAilment::Unknown, s)) => (AILMENTS[7], s),
-                    None => (AILMENTS[8], 0),
+                let status_ailment = match weapon.status_ailment {
+                    Some((StatusAilment::Poison, s)) => format!("Poison {s}"),
+                    Some((StatusAilment::ScarletRot, s)) => format!("Scarlet Rot {s}"),
+                    Some((StatusAilment::BloodLoss, s)) => format!("Bloodloss {s}"),
+                    Some((StatusAilment::Frostbite, s)) => format!("Frostbite {s}"),
+                    Some((StatusAilment::Sleep, s)) => format!("Sleep {s}"),
+                    Some((StatusAilment::Madness, s)) => format!("Madness {s}"),
+                    Some((StatusAilment::DeathBlight, s)) => format!("Death Blight {s}"),
+                    Some((StatusAilment::Unknown, s)) => format!("Unknown {s}"),
+                    None => String::from("-"),
                 };
 
                 let [str_scl, dex_scl, int_scl, fai_scl, arc_scl] = &weapon.scaling;
@@ -441,10 +413,23 @@ impl<'a> TableWidget<'a> {
                     String::from(SCALE_RANKS[int_scl.1.unwrap_or(6)]),
                     String::from(SCALE_RANKS[fai_scl.1.unwrap_or(6)]),
                     String::from(SCALE_RANKS[arc_scl.1.unwrap_or(6)]),
-                    weapon.attack_power[0].to_string(),
-                    weapon.guarded_negation[0].to_string(),
-                    String::from(ailment_type),
-                    status_ailment.to_string(),
+                    weapon
+                        .attack_power
+                        .map(|num| match num {
+                            0..=9 => format!("  {num}"),
+                            10..=99 => format!(" {num}"),
+                            100.. => format!("{num}"),
+                        })
+                        .join(" "),
+                    weapon
+                        .guarded_negation
+                        .map(|num| match num {
+                            0..=9 => format!("  {num}"),
+                            10..=99 => format!(" {num}"),
+                            100.. => format!("{num}"),
+                        })
+                        .join(" "),
+                    status_ailment,
                 ])
             })
             .collect();
