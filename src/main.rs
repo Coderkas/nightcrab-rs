@@ -171,12 +171,16 @@ impl<'a> App<'a> {
     }
 
     fn scan(&mut self) {
-        match App::scan_screen("2408,1103 620x50", &self.data) {
+        let upper_area =
+            env::var("NIGHTCRAB_UPPER").unwrap_or_else(|_| String::from("2408,1103 620x50"));
+        match App::scan_screen(&upper_area, &self.data) {
             Ok(matched_weapon) => self.table.update_upper(&matched_weapon),
             Err(err_str) => self.table.update_diagnostic(err_str),
         }
 
-        match App::scan_screen("3252,1101 620x50", &self.data) {
+        let lower_area =
+            env::var("NIGHTCRAB_LOWER").unwrap_or_else(|_| String::from("3252,1101 620x50"));
+        match App::scan_screen(&lower_area, &self.data) {
             Ok(matched_weapon) => self.table.update_lower(&matched_weapon),
             Err(err_str) => self.table.update_diagnostic(err_str),
         }

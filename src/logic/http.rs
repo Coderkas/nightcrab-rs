@@ -1,4 +1,5 @@
 use std::{
+    env,
     fs::OpenOptions,
     io::{BufRead, Read, Write},
     net::TcpStream,
@@ -9,8 +10,8 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_typ
 use webpki_roots::TLS_SERVER_ROOTS;
 
 pub fn send_web_request() {
-    let http_request = build_request();
-    let hostname = "mobalytics.gg";
+    let hostname = env::var("NIGHTCRAB_SOURCE").expect("Host name for data source was not set");
+    let http_request = build_request(&hostname);
 
     let mut root_store = RootCertStore::empty();
     root_store.extend(TLS_SERVER_ROOTS.iter().cloned());
@@ -19,7 +20,7 @@ pub fn send_web_request() {
         .with_no_client_auth();
 
     let config = Arc::new(config);
-    let server_name = ServerName::try_from(hostname).expect("failed server naem thing");
+    let server_name = ServerName::try_from(hostname.clone()).expect("failed server name thing");
     let sock = TcpStream::connect(format!("{hostname}:443")).expect("Socket connection failed");
     let conn: ClientConnection =
         ClientConnection::new(config, server_name).expect("TLS connection failed");
@@ -64,10 +65,11 @@ pub fn send_web_request() {
     }
 }
 
-fn build_request() -> String {
+fn build_request(hostname: &str) -> String {
+    let hostname_formatted = format!("Host: {hostname}");
     let mut base_request = [
         "POST /api/elden-ring-nightreign/v1/graphql/query HTTP/1.1",
-        "Host: mobalytics.gg",
+        hostname_formatted.as_str(),
         "User-Agent: Wget/1.25.0",
         "Accept: */*",
         "Accept-Encoding: identity",
