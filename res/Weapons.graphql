@@ -1,0 +1,58 @@
+query EldenRingNightreignWikiDocumentQuery($input: EldenRingNightreignWikiDocumentsListInput!) {
+  game: eldenRingNightreign {
+    documents {
+      wikiDocuments(input: $input, page: {limit: 500}) {
+        documents {
+          ... on EldenRingNightreignWikiDocument {
+            data {
+              staticDataEntity {
+                ... on EldenRingNightreignWeapon {
+                  name
+                  levelRequired
+                  rarity
+                  range
+                  weaponPassive {
+                    name
+                  }
+                  weaponType {
+                    name
+                  }
+                  attackAffinity {
+                    name
+                  }
+                  attackPower {
+                    value
+                    damageType {
+                      name
+                    }
+                  }
+                  guardedNegation {
+                    value
+                    damageType {
+                      name
+                    }
+                  }
+                  attributeScaling {
+                    value
+                    attribute {
+                      name
+                    }
+                  }
+                  statusAilment {
+                    value
+                    statusAilmentType {
+                      name
+                    }
+                  }
+                  ashOfWar {
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
