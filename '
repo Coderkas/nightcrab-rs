@@ -74,30 +74,43 @@ impl<'a> App<'a> {
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<(), (&str, Error)> {
+        terminal
+            .draw(|frame| self.draw(frame))
+            .map_err(|err| ("Drawing very first frame failed with err: ", err))?;
         loop {
-            if let Err(err) = terminal.draw(|frame| self.draw(frame)) {
-                return Err(("Drawing frame failed with err: ", err));
+            let timeout = Duration::from_secs(10);
+            let test = App::handle_navigation;
+            // move to method call? which gets called by each state method?
+            if !event::poll(timeout).map_err(|err| ("Error while waiting for input: ", err))? {
+                continue;
             }
-
+            terminal
+                .draw(|frame| self.draw(frame))
+                .map_err(|err| ("Drawing very first frame failed with err: ", err))?;
+            let key_code =
+                match event::read().map_err(|err| ("Error while reading input: ", err))? {
+                    Event::Key(KeyEvent {
+                        code: c,
+                        kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                        ..
+                    }) => c,
+                    _ => continue,
+                };
             match self.state.base {
-                BaseState::Navigating => App::read_key(|key: KeyCode| self.navigate(key))?,
-                BaseState::Searching => App::read_key(|key: KeyCode| self.search(key))?,
+                BaseState::Navigating => self.handle_navigation(key_code),
+                BaseState::Searching => {
+                    self.search(key_code);
+                    let area = terminal.get_frame().area();
+                    self.table = TableWidget::new(&self.displayed_data, area, BaseState::Searching);
+                }
                 BaseState::Scanning => {
+                    // this is not gonna work idiot, how are we gonna scan when we continue loop on
+                    // missing event
                     self.scan();
-
-                    if !event::poll(Duration::from_secs(2))
-                        .map_err(|err| ("Error while waiting for input: ", err))?
-                    {
-                        continue;
-                    }
-
-                    App::read_key(|key: KeyCode| {
-                        if KeyCode::Esc != key {
-                            return;
-                        }
+                    if matches!(key_code, KeyCode::Esc) {
                         self.state.base = BaseState::Navigating;
-                        self.table.update_scan_active(&BaseState::Navigating);
-                    })?;
+                        self.table.update_scan_active(BaseState::Navigating);
+                    }
                 }
                 BaseState::Exiting => break,
             }
@@ -123,20 +136,24 @@ impl<'a> App<'a> {
         }
     }
 
-    fn read_key(mut next_handler: impl FnMut(KeyCode)) -> Result<(), (&'static str, Error)> {
+    fn read_key(
+        &mut self,
+        next_handler: fn(&mut App, KeyCode),
+        timeout: Duration,
+    ) -> Result<(), (&str, Error)> {
         match event::read() {
             Ok(Event::Key(KeyEvent {
                 code: c,
                 kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
-            })) => next_handler(c),
+            })) => next_handler(self, c),
             Ok(_) => (),
-            Err(err) => return Err(("Error while reading input: ", err)),
+            Err(err) => Err(("Error while reading input: ", err)),
         }
         Ok(())
     }
 
-    fn navigate(&mut self, key_code: KeyCode) {
+    fn handle_navigation(&mut self, key_code: KeyCode) {
         match key_code {
             KeyCode::Char('q') => self.state.base = BaseState::Exiting,
             KeyCode::Char('j') => {
@@ -158,7 +175,7 @@ impl<'a> App<'a> {
             }
             KeyCode::Char('v') => {
                 self.state.base = BaseState::Scanning;
-                self.table.update_scan_active(&BaseState::Scanning);
+                self.table.update_scan_active(BaseState::Scanning);
             }
             KeyCode::Char('s') => self.filter(0),
             KeyCode::Char('d') => self.filter(1),
@@ -235,22 +252,26 @@ impl<'a> App<'a> {
 
     fn search(&mut self, key_code: KeyCode) {
         match key_code {
-            KeyCode::Esc | KeyCode::Enter => {
+            KeyCode::Esc => {
                 self.state.base = BaseState::Navigating;
-                self.state.search.clear();
-                self.search.update(self.state.search.clone());
-                return;
+                self.displayed_data = self.data.clone();
+                self.state.filter = 0;
             }
-            KeyCode::Char(c) => self.state.search.push(c.to_ascii_lowercase()),
+            KeyCode::Char(c) => self.state.search.push(c),
             KeyCode::Backspace => _ = self.state.search.pop(),
-            _ => return,
+            KeyCode::Enter => self.state.base = BaseState::Navigating,
+            _ => (),
         }
 
-        self.state.table.select(
-            self.displayed_data
-                .iter()
-                .position(|w| w.name.to_lowercase().contains(&self.state.search)),
-        );
+        if matches!(self.state.base, BaseState::Searching) {
+            self.state.table.select(
+                self.displayed_data
+                    .iter()
+                    .position(|w| w.name.contains(&self.state.search)),
+            );
+        } else {
+            self.state.search.clear();
+        }
         self.search.update(self.state.search.clone());
     }
 
@@ -457,7 +478,7 @@ impl<'a> TableWidget<'a> {
         self.table.widget = TableWidget::create_table(data, filtered_column);
     }
 
-    fn update_scan_active(&mut self, app_state: &BaseState) {
+    fn update_scan_active(&mut self, app_state: BaseState) {
         self.info_block.widget = Block::bordered().title(Line::from(vec![
             Span::from("Details ").fg(match app_state {
                 BaseState::Scanning => Color::Yellow,
@@ -706,11 +727,8 @@ fn main() {
                     weapon_data.push(Rc::new(Weapon::new(&weapon["data"]["staticDataEntity"])));
                 }
                 let mut app = App::new(&weapon_data, terminal.get_frame().area());
-                let res = app.run(&mut terminal);
+                app.run(&mut terminal);
                 ratatui::restore();
-                if let Err((err_msg, err)) = res {
-                    println!("{err_msg}{err}");
-                }
             }
         }
         "update" => {
